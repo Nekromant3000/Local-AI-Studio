@@ -8,6 +8,7 @@ import type {
   SettingsResponse,
   TokenStats,
   UploadedAsset,
+  UrlContextItem,
 } from "../types";
 
 const API_BASE = "/api";
@@ -116,10 +117,46 @@ export const api = {
     imageCount: number;
     fileCount: number;
     thoughtTexts: string[];
+    chatId?: string | null;
+    urlContext?: boolean;
   }): Promise<TokenStats> {
     return request<TokenStats>(`/tokens/count`, {
       method: "POST",
       body: JSON.stringify(payload),
+    });
+  },
+
+  getUrlContext(chatId: string): Promise<{ items: UrlContextItem[] }> {
+    return request<{ items: UrlContextItem[] }>(
+      `/chats/${encodeURIComponent(chatId)}/url-context`,
+    );
+  },
+
+  setUrlExcluded(chatId: string, urlId: string, excluded: boolean): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>(`/chats/${encodeURIComponent(chatId)}/url-context`, {
+      method: "PUT",
+      body: JSON.stringify({ urlId, excluded }),
+    });
+  },
+
+  extractUrl(
+    url: string,
+    force = false,
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    record?: {
+      url: string;
+      urlId: string;
+      title: string;
+      domain: string;
+      textLength: number;
+      truncated?: boolean;
+    } | null;
+  }> {
+    return request(`/assets/extract-url`, {
+      method: "POST",
+      body: JSON.stringify({ url, force }),
     });
   },
 

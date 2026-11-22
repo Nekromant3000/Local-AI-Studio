@@ -387,6 +387,24 @@ def is_text_attachment(name: str, mime: str) -> bool:
     return Path(name).suffix.lower() in TEXT_EXTENSIONS
 
 
+DOCX_MIMES = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+def looks_like_docx(data: bytes) -> bool:
+    """OOXML .docx: ZIP-магия и каталог word/ в начале архива."""
+    return data[:4] == b"PK\x03\x04" and b"word/" in data[:8192]
+
+
+def is_docx_attachment(name: str, mime: str, raw_bytes: bytes | None = None) -> bool:
+    if Path(name).suffix.lower() == ".docx":
+        return True
+    if mime in DOCX_MIMES:
+        return True
+    return bool(raw_bytes) and looks_like_docx(raw_bytes)
+
+
 def drive_public_url(drive_id: str, kind: str) -> str:
     if kind == "youtube":
         return f"https://www.youtube.com/watch?v={drive_id}"

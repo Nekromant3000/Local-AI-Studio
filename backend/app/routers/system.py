@@ -7,7 +7,10 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.concurrency import run_in_threadpool
 
+from .. import gas_store
+from ..attachments import get_attachment_bytes, is_docx_attachment, is_text_attachment
 from ..config import (
     CHAT_DIR,
     normalize_thinking_level,
@@ -15,8 +18,11 @@ from ..config import (
     load_settings,
     save_settings,
 )
-from ..tokens import count_request
-from ..utils import utc_now_iso
+from ..docx import docx_bytes_to_markdown
+from ..llm import MAX_TEXT_ATTACHMENT_CHARS
+from ..tokens import FILE_TOKEN_ESTIMATE, count_request, count_tokens
+from ..url_context import gather_url_context
+from ..utils import InvalidNameError, chat_id_decode, utc_now_iso
 
 router = APIRouter(prefix="/api", tags=["system"])
 
@@ -35,6 +41,7 @@ class SettingsUpdate(BaseModel):
     topP: float | None = None
     sendAttachments: bool | None = None
     contextWindow: int | None = None
+    urlContext: bool | None = None
 
 
 class TokenCountRequest(BaseModel):
@@ -45,6 +52,8 @@ class TokenCountRequest(BaseModel):
     imageCount: int = 0
     fileCount: int = 0
     thoughtTexts: list[str] = Field(default_factory=list)
+    chatId: str | None = None
+    urlContext: bool = True
 
 
 @router.get("/health")
@@ -84,7 +93,7 @@ def update_settings(payload: SettingsUpdate) -> dict[str, Any]:
     if payload.clearApiKey:
         current["apiKey"] = ""
 
-    for key in ("model", "reasoningMode", "thinkingLevel", "temperature", "maxOutputTokens", "topP", "sendAttachments", "contextWindow"):
+    for key in ("model", "reasoningMode", "thinkingLevel", "temperature", "maxOutputTokens", "topP", "sendAttachments", "contextWindow", "urlContext"):
         if key in changed and changed[key] is not None:
             current[key] = changed[key]
 
@@ -101,11 +110,74 @@ def update_settings(payload: SettingsUpdate) -> dict[str, Any]:
 
 
 @router.post("/tokens/count")
-def token_count(payload: TokenCountRequest) -> dict[str, Any]:
+async def token_count(payload: TokenCountRequest) -> dict[str, Any]:
+    attachment_text_tokens = 0
+    embedded_text_files = 0
+    url_tokens = 0
+    url_items: list[dict[str, Any]] = []
+
+    if payload.chatId:
+        try:
+            raw = await run_in_threadpool(gas_store.load_raw, payload.chatId)
+        except (HTTPException, InvalidNameError, FileNotFoundError):
+            raw = None
+        if isinstance(raw, dict):
+            chunks = raw.get("chunkedPrompt", {}).get("chunks") or []
+            for index, chunk in enumerate(chunks):
+                if not isinstance(chunk, dict):
+                    continue
+                for slot in ("inlineFile", "driveDocument"):
+                    if not isinstance(chunk.get(slot), dict):
+                        continue
+                    attachment = get_attachment_bytes(raw, index, slot)
+                    if not attachment:
+                        continue
+                    raw_bytes, mime, name = attachment
+                    text: str | None = None
+                    if is_docx_attachment(name, mime, raw_bytes):
+                        try:
+                            text = await run_in_threadpool(docx_bytes_to_markdown, raw_bytes)
+                        except Exception:
+                            text = None
+                    elif is_text_attachment(name, mime):
+                        try:
+                            text = raw_bytes.decode("utf-8", errors="replace")
+                        except OSError:
+                            text = None
+                    if text:
+                        if len(text) > MAX_TEXT_ATTACHMENT_CHARS:
+                            text = text[:MAX_TEXT_ATTACHMENT_CHARS]
+                        attachment_text_tokens += count_tokens(text)
+                        embedded_text_files += 1
+
+            if payload.urlContext:
+                chat_name = chat_id_decode(payload.chatId) if payload.chatId else None
+                if chat_name:
+                    try:
+                        records = await run_in_threadpool(
+                            gather_url_context, raw, chat_name
+                        )
+                    except Exception:
+                        records = []
+                    for record in records:
+                        text = str(record.get("text") or "")
+                        tokens = count_tokens(text)
+                        url_tokens += tokens
+                        url_items.append(
+                            {
+                                "url": record.get("url"),
+                                "title": record.get("title"),
+                                "tokens": tokens,
+                            }
+                        )
+
     return count_request(
         texts=payload.texts,
         system=payload.system,
         image_count=payload.imageCount,
-        file_count=payload.fileCount,
+        file_count=max(0, payload.fileCount - embedded_text_files),
         thought_texts=payload.thoughtTexts,
+        attachment_text_tokens=attachment_text_tokens,
+        url_tokens=url_tokens,
+        urls=url_items,
     )

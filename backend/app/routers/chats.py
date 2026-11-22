@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.concurrency import run_in_threadpool
+from urllib.parse import urlsplit
 
 from .. import gas_store
 from ..attachments import ATTACHMENT_SLOTS, get_attachment_bytes
@@ -29,7 +30,14 @@ from ..llm import (
     stream_completion,
 )
 from ..tokens import count_tokens
-from ..utils import utc_now_iso
+from ..url_context import (
+    MAX_URLS_PER_CHAT,
+    load_cached_url,
+    load_chat_meta,
+    set_url_excluded,
+    urls_in_chat,
+)
+from ..utils import InvalidNameError, chat_id_decode, utc_now_iso
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 
@@ -62,6 +70,7 @@ class LocalApiSettings(BaseModel):
     topP: float = 0.95
     sendAttachments: bool = True
     contextWindow: int = 131072
+    urlContext: bool = True
 
 
 class GenerateBody(BaseModel):
@@ -87,6 +96,7 @@ def _merged_settings(raw: dict[str, Any], body: GenerateBody | None = None) -> L
         "topP": float(global_settings.get("topP", 0.95)),
         "sendAttachments": bool(global_settings.get("sendAttachments", True)),
         "contextWindow": int(global_settings.get("contextWindow", 131072)),
+        "urlContext": bool(global_settings.get("urlContext", True)),
     }
     run_settings = raw.get("runSettings") if isinstance(raw.get("runSettings"), dict) else {}
     local = run_settings.get("localApi") if isinstance(run_settings.get("localApi"), dict) else {}
@@ -183,6 +193,62 @@ def chat_asset(
     return Response(content=raw_bytes, media_type=mime, headers=headers)
 
 
+class UrlContextBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    urlId: str
+    excluded: bool = True
+
+
+def _chat_name_or_none(chat_id: str) -> str | None:
+    try:
+        return chat_id_decode(chat_id)
+    except InvalidNameError:
+        return None
+
+
+@router.get("/{chat_id}/url-context")
+def get_url_context(chat_id: str) -> dict[str, Any]:
+    raw = gas_store.load_raw(chat_id)
+    chat_name = _chat_name_or_none(chat_id)
+    excluded: set[str] = set()
+    if chat_name:
+        excluded = {str(x) for x in load_chat_meta(chat_name).get("excludedUrlIds") or []}
+    items: list[dict[str, Any]] = []
+    for item in urls_in_chat(raw)[:MAX_URLS_PER_CHAT]:
+        cached = load_cached_url(item["urlId"])
+        text = str((cached or {}).get("text") or "")
+        items.append(
+            {
+                "url": item["url"],
+                "urlId": item["urlId"],
+                "domain": urlsplit(item["url"]).netloc,
+                "title": str((cached or {}).get("title") or ""),
+                "cached": bool(text),
+                "tokens": count_tokens(text) if text else 0,
+                "truncated": bool((cached or {}).get("truncated")),
+                "excluded": item["urlId"] in excluded,
+            }
+        )
+    return {"items": items}
+
+
+@router.put("/{chat_id}/url-context")
+def put_url_context(chat_id: str, payload: UrlContextBody) -> dict[str, Any]:
+    chat_name = _chat_name_or_none(chat_id)
+    if not chat_name:
+        raise HTTPException(400, "Некорректный id чата")
+    url_id_pattern = payload.urlId.strip().lower()
+    if len(url_id_pattern) != 40 or any(c not in "0123456789abcdef" for c in url_id_pattern):
+        raise HTTPException(400, "Некорректный идентификатор ссылки")
+    raw = gas_store.load_raw(chat_id)
+    known = {item["urlId"] for item in urls_in_chat(raw)}
+    if url_id_pattern not in known:
+        raise HTTPException(404, "Ссылка не найдена в чате")
+    excluded_ids = set_url_excluded(chat_name, url_id_pattern, bool(payload.excluded))
+    return {"ok": True, "excludedUrlIds": sorted(excluded_ids)}
+
+
 @router.post("/{chat_id}/generate")
 async def generate(chat_id: str, payload: GenerateBody) -> StreamingResponse:
     raw = await run_in_threadpool(gas_store.load_raw, chat_id)
@@ -206,6 +272,8 @@ async def generate(chat_id: str, payload: GenerateBody) -> StreamingResponse:
                 context_raw,
                 send_attachments=settings.sendAttachments,
                 thinking_level=settings.thinkingLevel,
+                url_context=settings.urlContext,
+                chat_name=_chat_name_or_none(chat_id),
             )
         )
     except LLMError as exc:

@@ -21,6 +21,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import CopyButton from "./CopyButton";
 import MarkdownView from "./MarkdownView";
 import ThinkingBlock from "./ThinkingBlock";
+import UrlContextChips from "./UrlContextChips";
 
 interface MessageFrameProps {
   turn: DisplayTurn;
@@ -246,6 +247,8 @@ export default function MessageFrame({ turn, chatId }: MessageFrameProps) {
             ) : null}
 
             <AttachmentGrid chatId={chatId} attachments={turn.attachments} />
+
+            {isUser ? <UrlContextChips chatId={chatId} text={turn.text} /> : null}
 
             {serviceData.length ? (
               <details className="mt-3 rounded-lg border border-white/[0.07] bg-white/[0.015]">

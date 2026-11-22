@@ -27,6 +27,9 @@ DATA_DIR = DATA_DIR.resolve()
 UPLOAD_DIR = DATA_DIR / "uploads"
 BACKUP_DIR = DATA_DIR / "backups"
 THUMB_DIR = DATA_DIR / "thumbnails"
+ATTACHMENTS_DIR = DATA_DIR / "attachments"
+URL_CACHE_DIR = DATA_DIR / "url_cache"
+CHAT_META_DIR = DATA_DIR / "chat_meta"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
@@ -83,6 +86,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "topP": 0.95,
     "sendAttachments": True,
     "contextWindow": 131072,
+    "urlContext": True,
 }
 
 DEFAULT_CHAT_RUN_SETTINGS: dict[str, Any] = {
@@ -101,7 +105,7 @@ DEFAULT_CHAT_RUN_SETTINGS: dict[str, Any] = {
 
 
 def ensure_dirs() -> None:
-    for path in (DATA_DIR, UPLOAD_DIR, BACKUP_DIR, THUMB_DIR):
+    for path in (DATA_DIR, UPLOAD_DIR, BACKUP_DIR, THUMB_DIR, ATTACHMENTS_DIR, URL_CACHE_DIR, CHAT_META_DIR):
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -155,4 +159,5 @@ def chat_local_defaults(settings: dict[str, Any]) -> dict[str, Any]:
         "topP": settings.get("topP", 0.95),
         "sendAttachments": bool(settings.get("sendAttachments", True)),
         "contextWindow": settings.get("contextWindow", 131072),
+        "urlContext": bool(settings.get("urlContext", True)),
     }

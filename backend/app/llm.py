@@ -16,6 +16,7 @@ import httpx
 from .attachments import (
     ATTACHMENT_SLOTS,
     get_attachment_bytes,
+    is_docx_attachment,
     is_text_attachment,
 )
 from .config import (
@@ -24,7 +25,9 @@ from .config import (
     THINKING_MAX_OUTPUT_TOKENS,
     normalize_thinking_level,
 )
+from .docx import docx_bytes_to_markdown
 from .tokens import count_tokens
+from .url_context import build_context_blocks, gather_url_context
 from .utils import utc_now_iso
 
 MAX_IMAGES = 12
@@ -342,6 +345,8 @@ def build_messages(
     *,
     send_attachments: bool = True,
     thinking_level: str = "NONE",
+    url_context: bool = False,
+    chat_name: str | None = None,
 ) -> list[dict[str, Any]]:
     chunks = raw.get("chunkedPrompt", {}).get("chunks", [])
     system = raw.get("systemInstruction", {})
@@ -415,7 +420,29 @@ def build_messages(
                 elif slot in ("inlineFile", "driveDocument"):
                     if attachment:
                         raw_bytes, mime, name = attachment
-                        if is_text_attachment(name, mime):
+                        if is_docx_attachment(name, mime, raw_bytes):
+                            try:
+                                extracted = docx_bytes_to_markdown(raw_bytes)
+                            except Exception:
+                                extracted = ""
+                            if extracted:
+                                if len(extracted) > MAX_TEXT_ATTACHMENT_CHARS:
+                                    extracted = (
+                                        extracted[:MAX_TEXT_ATTACHMENT_CHARS]
+                                        + "\n\n[…файл обрезан…]"
+                                    )
+                                parts.append(
+                                    {
+                                        "type": "text",
+                                        "text": f"Содержимое документа «{name}»:\n{extracted}",
+                                    }
+                                )
+                                has_media = True
+                            else:
+                                notes.append(
+                                    f"Из документа «{name}» не удалось извлечь текст."
+                                )
+                        elif is_text_attachment(name, mime):
                             extracted = _attachment_text(raw_bytes, name)
                             if extracted:
                                 parts.append(
@@ -472,6 +499,29 @@ def build_messages(
 
     if not messages:
         raise LLMError("В контексте нет сообщений для генерации", 400)
+
+    if url_context:
+        records = gather_url_context(raw, chat_name, fetch_missing=True)
+        blocks = build_context_blocks(records)
+        if blocks:
+            url_block = (
+                "Контекст ссылок из переписки (автоматически извлечённый текст страниц):\n\n"
+                + "\n\n".join(blocks)
+            )
+            injected = False
+            for index in range(len(messages) - 1, -1, -1):
+                if messages[index].get("role") != "user":
+                    continue
+                content = messages[index].get("content")
+                if isinstance(content, list):
+                    content.append({"type": "text", "text": url_block})
+                else:
+                    messages[index]["content"] = f"{content or ''}\n\n{url_block}".strip()
+                injected = True
+                break
+            if not injected:
+                messages.append({"role": "user", "content": url_block})
+
     if system_text.strip():
         messages.insert(0, {"role": "system", "content": system_text.strip()})
     inject_depth_reminder(messages, system_text, thinking_level)

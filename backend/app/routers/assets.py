@@ -13,7 +13,9 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
 
 from ..attachments import (
     DOCUMENT_EXTENSIONS,
@@ -21,9 +23,12 @@ from ..attachments import (
     MIME_BY_EXT,
     TEXT_EXTENSIONS,
     VIDEO_EXTENSIONS,
+    is_docx_attachment,
     resolve_local_name,
 )
-from ..config import CHAT_DIR, THUMB_DIR, UPLOAD_DIR
+from ..config import ATTACHMENTS_DIR, CHAT_DIR, THUMB_DIR, UPLOAD_DIR
+from ..docx import docx_bytes_to_markdown
+from ..url_context import fetch_url_page, normalize_url
 from ..utils import human_size, natural_key
 
 router = APIRouter(prefix="/api", tags=["assets"])
@@ -57,14 +62,34 @@ async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     temp_id = uuid.uuid4().hex
     target = UPLOAD_DIR / f"{temp_id}.bin"
+    name = Path(file.filename or "file").name
+    name = "".join(char for char in name if ord(char) >= 32)[:200] or "file"
+    mime = file.content_type or _mime_for_path(Path(name))
+    converted_from: str | None = None
+    original_size = len(raw)
+
+    if is_docx_attachment(name, mime, raw):
+        # В JSON чата кладём только извлечённый Markdown (GAS-совместимость);
+        # исходный .docx храним локально в data/attachments.
+        try:
+            markdown = await run_in_threadpool(docx_bytes_to_markdown, raw)
+        except Exception as exc:
+            raise HTTPException(400, f"Не удалось прочитать документ .docx: {exc}") from exc
+        if not markdown:
+            raise HTTPException(400, "В документе .docx не найдено текста")
+        ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+        (ATTACHMENTS_DIR / f"{temp_id}.docx").write_bytes(raw)
+        raw = markdown.encode("utf-8")
+        stem = name[: -len(Path(name).suffix)] if Path(name).suffix else name
+        name = f"{stem}.md"
+        mime = "text/markdown"
+        converted_from = "docx"
+
     try:
         target.write_bytes(raw)
     except OSError as exc:
         raise HTTPException(500, f"Не удалось сохранить файл: {exc}") from exc
-    name = Path(file.filename or "file").name
-    name = "".join(char for char in name if ord(char) >= 32)[:200] or "file"
-    mime = file.content_type or _mime_for_path(Path(name))
-    return {
+    result: dict[str, Any] = {
         "tempId": temp_id,
         "name": name,
         "mimeType": mime,
@@ -72,6 +97,27 @@ async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:
         "sizeLabel": human_size(len(raw)),
         "previewUrl": f"/api/uploads/{temp_id}",
     }
+    if converted_from:
+        result["convertedFrom"] = converted_from
+        result["originalSize"] = original_size
+    return result
+
+
+class ExtractUrlRequest(BaseModel):
+    url: str
+    force: bool = False
+
+
+@router.post("/assets/extract-url")
+async def extract_url(payload: ExtractUrlRequest) -> dict[str, Any]:
+    normalized = normalize_url(payload.url)
+    if not normalized:
+        raise HTTPException(400, "Некорректный URL")
+    record = await run_in_threadpool(fetch_url_page, normalized, payload.force)
+    if record.get("error"):
+        return {"ok": False, "error": record["error"], "record": None}
+    record.pop("textFull", None)
+    return {"ok": True, "record": {**record, "textLength": len(record.get("text") or "")}}
 
 
 @router.get("/uploads/{temp_id}")

@@ -6,6 +6,7 @@ import {
   Gauge,
   Info,
   KeyRound,
+  Link2,
   Loader2,
   Lock,
   Maximize2,
@@ -311,6 +312,11 @@ export default function RightPanel({ onClose, overlay }: RightPanelProps) {
               <StatRow label="Вложения" value={tokenStats ? formatNumber(tokenStats.attachments) : "—"} />
               <StatRow label="Изображения" value={tokenStats ? formatNumber(tokenStats.images) : "—"} />
               <StatRow label="Файлы" value={tokenStats ? formatNumber(tokenStats.files) : "—"} />
+              <StatRow
+                label="URL"
+                value={tokenStats ? formatNumber(tokenStats.urls) : "—"}
+                hint="Текст страниц по ссылкам из сообщений; добавляется только в контекст модели"
+              />
               <StatRow
                 label="Мысли"
                 value={tokenStats ? formatNumber(tokenStats.thoughts) : "—"}
@@ -700,6 +706,27 @@ export default function RightPanel({ onClose, overlay }: RightPanelProps) {
                 }
                 role="switch"
                 aria-checked={settings.sendAttachments}
+              />
+            </div>
+
+            <div className="flex items-center gap-3 rounded-lg border border-white/[0.07] bg-white/[0.018] px-2.5 py-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 text-[10.5px] text-ink-200">
+                  <Link2 size={11} className="text-ink-400" />
+                  URL Context
+                </div>
+                <div className="mt-0.5 text-[9px] text-ink-500">
+                  Ссылки из сообщений загружаются и добавляют текст страниц в контекст модели.
+                  JSON чата не меняется; ссылки можно исключать прямо в ленте.
+                </div>
+              </div>
+              <button
+                type="button"
+                className="toggle"
+                data-on={settings.urlContext}
+                onClick={() => updateLocalApi({ urlContext: !settings.urlContext })}
+                role="switch"
+                aria-checked={settings.urlContext}
               />
             </div>
           </div>

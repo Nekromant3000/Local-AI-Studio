@@ -138,6 +138,7 @@ export interface LocalApiSettings {
   topP: number;
   sendAttachments: boolean;
   contextWindow: number;
+  urlContext: boolean;
 }
 
 export interface AppSettings extends LocalApiSettings {
@@ -159,9 +160,23 @@ export interface TokenStats {
   attachments: number;
   images: number;
   files: number;
+  attachmentText?: number;
+  urls?: number;
+  urlItems?: Array<{ url: string; title?: string; tokens: number }>;
   thoughts: number;
   approximate: boolean;
   tokenizer?: string;
+}
+
+export interface UrlContextItem {
+  url: string;
+  urlId: string;
+  domain: string;
+  title: string;
+  cached: boolean;
+  tokens: number;
+  truncated?: boolean;
+  excluded: boolean;
 }
 
 export interface UploadedAsset {
@@ -171,6 +186,8 @@ export interface UploadedAsset {
   size: number;
   sizeLabel: string;
   previewUrl: string;
+  convertedFrom?: string;
+  originalSize?: number;
 }
 
 export interface ChatListResponse {

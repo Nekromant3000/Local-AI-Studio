@@ -24,6 +24,7 @@ import type {
   StreamingState,
   ThinkingLevel,
   TokenStats,
+  UrlContextItem,
 } from "../types";
 
 const LAST_CHAT_KEY = "local-ai-studio:last-chat";
@@ -49,6 +50,7 @@ interface AppState {
   modelsBaseUrl: string;
   tokenStats: TokenStats | null;
   tokenLoading: boolean;
+  urlContextItems: UrlContextItem[];
   streaming: StreamingState | null;
   generating: boolean;
   draftText: string;
@@ -65,6 +67,8 @@ interface AppState {
   setHistoryOpen: (open: boolean) => void;
   setDraftText: (text: string) => void;
   refreshTokens: () => Promise<void>;
+  refreshUrlContext: () => Promise<void>;
+  setUrlExcluded: (urlId: string, excluded: boolean) => Promise<void>;
   saveNow: () => Promise<boolean>;
   scheduleSave: (delay?: number) => void;
   updateChat: (mutator: (chat: GasChat) => void, options?: { save?: boolean }) => void;
@@ -112,6 +116,7 @@ const defaultSettings: AppSettings = {
   topP: 0.95,
   sendAttachments: true,
   contextWindow: 131072,
+  urlContext: true,
   hasApiKey: false,
 };
 
@@ -185,6 +190,7 @@ function localSettingsFor(doc: ChatDocument | null, settings: AppSettings): Loca
     topP: local?.topP ?? settings.topP,
     sendAttachments: local?.sendAttachments ?? settings.sendAttachments,
     contextWindow: local?.contextWindow ?? settings.contextWindow,
+    urlContext: local?.urlContext ?? settings.urlContext ?? true,
   };
 }
 
@@ -249,6 +255,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   modelsBaseUrl: "",
   tokenStats: null,
   tokenLoading: false,
+  urlContextItems: [],
   streaming: null,
   generating: false,
   draftText: "",
@@ -313,6 +320,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       streaming: null,
       generating: false,
       tokenStats: null,
+      urlContextItems: [],
       draftText: "",
     });
     localStorage.setItem(LAST_CHAT_KEY, id);
@@ -321,6 +329,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       set({ doc, loadingDoc: false, saveState: "idle", dirty: false });
       localStorage.setItem(LAST_CHAT_KEY, doc.id);
       void get().refreshTokens();
+      void get().refreshUrlContext();
       const local = localSettingsFor(doc, get().settings);
       if (get().modelsBaseUrl !== local.baseUrl) {
         void get().loadModels(false);
@@ -347,6 +356,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
       }));
       localStorage.setItem(LAST_CHAT_KEY, doc.id);
       void get().refreshTokens();
+      void get().refreshUrlContext();
       void get().loadModels(false);
     } catch (error) {
       set({ error: errorMessage(error) });
@@ -432,15 +442,51 @@ export const useAppStore = create<AppState>()((set, get) => ({
       return;
     }
     const inputs = tokenInputs(doc.chat, get().draftText);
+    const settings = localSettingsFor(doc, get().settings);
     const seq = ++tokenRequestSeq;
     if (tokenAbort) tokenAbort.abort();
     tokenAbort = new AbortController();
     set({ tokenLoading: true });
     try {
-      const stats = await api.countTokens(inputs);
+      const stats = await api.countTokens({
+        ...inputs,
+        chatId: doc.id,
+        urlContext: settings.urlContext,
+      });
       if (seq === tokenRequestSeq) set({ tokenStats: stats, tokenLoading: false });
     } catch {
       if (seq === tokenRequestSeq) set({ tokenLoading: false });
+    }
+  },
+
+  refreshUrlContext: async () => {
+    const doc = get().doc;
+    if (!doc) {
+      set({ urlContextItems: [] });
+      return;
+    }
+    try {
+      const { items } = await api.getUrlContext(doc.id);
+      if (get().doc?.id === doc.id) set({ urlContextItems: items });
+    } catch {
+      /* список обновится при следующем сохранении/открытии */
+    }
+  },
+
+  setUrlExcluded: async (urlId, excluded) => {
+    const doc = get().doc;
+    if (!doc) return;
+    set((state) => ({
+      urlContextItems: state.urlContextItems.map((item) =>
+        item.urlId === urlId ? { ...item, excluded } : item,
+      ),
+    }));
+    try {
+      await api.setUrlExcluded(doc.id, urlId, excluded);
+      void get().refreshTokens();
+    } catch (error) {
+      set({ error: errorMessage(error) });
+      void get().refreshUrlContext();
     }
   },
 
@@ -477,6 +523,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
             error: null,
           }));
           if (unchanged) localStorage.setItem(LAST_CHAT_KEY, saved.id);
+          if (unchanged) void get().refreshUrlContext();
           if (savedTimer) clearTimeout(savedTimer);
           savedTimer = setTimeout(() => {
             if (get().saveState === "saved") set({ saveState: "idle" });
@@ -805,6 +852,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
               applyDone(event, chatId, set);
               set({ generating: false, streaming: null, notice: event.warning || null });
               void get().refreshTokens();
+              void get().refreshUrlContext();
             }
           },
         },
