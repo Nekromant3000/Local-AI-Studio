@@ -92,6 +92,7 @@ export default function App() {
   const loadingChats = useAppStore((state) => state.loadingChats);
   const loadingDoc = useAppStore((state) => state.loadingDoc);
   const chatDir = useAppStore((state) => state.chatDir);
+  const isHistoryOpen = useAppStore((state) => state.isHistoryOpen);
 
   const isDesktop = useMediaQuery("(min-width: 1280px)");
   const [desktopSidebar, setDesktopSidebar] = useState(true);
@@ -178,7 +179,7 @@ export default function App() {
         ) : (
           <>
             <ChatWorkspace />
-            {doc ? <Composer onOpenSettings={() => (isDesktop ? setDesktopRight(true) : setMobileRight(true))} /> : null}
+            {doc && !isHistoryOpen ? <Composer onOpenSettings={() => (isDesktop ? setDesktopRight(true) : setMobileRight(true))} /> : null}
             {!doc && !loadingDoc ? (
               <div className="flex-none border-t border-white/[0.06] px-4 py-3 text-center text-[10.5px] text-ink-500">
                 {chats.length

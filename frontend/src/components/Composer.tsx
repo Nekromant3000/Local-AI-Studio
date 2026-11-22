@@ -21,6 +21,13 @@ interface ComposerProps {
   onOpenSettings?: () => void;
 }
 
+const THINKING_BADGE_LABEL: Record<string, string> = {
+  LOW: "Low",
+  MEDIUM: "Medium",
+  HIGH: "High",
+  EXTRA_HIGH: "Extra High",
+};
+
 export default function Composer({ onOpenSettings }: ComposerProps) {
   const draftText = useAppStore((state) => state.draftText);
   const setDraftText = useAppStore((state) => state.setDraftText);
@@ -258,10 +265,10 @@ export default function Composer({ onOpenSettings }: ComposerProps) {
             </button>
 
             <div className="ml-1 hidden items-center gap-1.5 text-[9.5px] text-ink-500 sm:flex">
-              {settings.reasoningMode ? (
+              {settings.thinkingLevel !== "NONE" ? (
                 <span className="badge border-violet-300/20 bg-violet-300/[0.06] text-violet-200">
                   <Brain size={10} />
-                  Reasoning · 65536
+                  Мышление · {THINKING_BADGE_LABEL[settings.thinkingLevel] ?? settings.thinkingLevel} · 65536
                 </span>
               ) : null}
               {tokenStats ? (

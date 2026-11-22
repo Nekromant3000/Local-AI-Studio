@@ -9,6 +9,7 @@ import {
   Loader2,
   Lock,
   Maximize2,
+  PenLine,
   RefreshCw,
   Save,
   Send,
@@ -18,6 +19,7 @@ import {
 import clsx from "clsx";
 import { useAppStore, useLocalSettings } from "../store/useAppStore";
 import { formatNumber } from "../lib/format";
+import type { ThinkingLevel } from "../types";
 import Modal from "./Modal";
 
 interface RightPanelProps {
@@ -26,10 +28,29 @@ interface RightPanelProps {
 }
 
 const PRESETS = [
-  { id: "strata", label: "Strata", baseUrl: "http://127.0.0.1:47831/v1" },
+  { id: "strata", label: "Strata", baseUrl: "http://localhost:47831/v1" },
   { id: "lmstudio", label: "LM Studio", baseUrl: "http://localhost:1234/v1" },
   { id: "ollama", label: "Ollama", baseUrl: "http://localhost:11434/v1" },
   { id: "llamacpp", label: "llama.cpp", baseUrl: "http://localhost:8080/v1" },
+];
+
+const STRATA_API_KEY = "strata-local";
+
+// 127.0.0.1 и localhost для подсветки активного пресета — один и тот же адрес.
+function normalizeUrlForCompare(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\/+$/, "")
+    .replace("//127.0.0.1", "//localhost");
+}
+
+const THINKING_OPTIONS: Array<{ value: ThinkingLevel; label: string; hint: string }> = [
+  { value: "NONE", label: "Off", hint: "Без размышлений: Temperature и Top P доступны, reasoning_effort=none" },
+  { value: "LOW", label: "Low", hint: "reasoning_effort=low, Max Output Tokens = 65 536" },
+  { value: "MEDIUM", label: "Medium", hint: "reasoning_effort=medium, Max Output Tokens = 65 536" },
+  { value: "HIGH", label: "High", hint: "reasoning_effort=high + глубокной разбор сценариев (depth prompting)" },
+  { value: "EXTRA_HIGH", label: "Extra High", hint: "Максимально глубокий пошаговый разбор, reasoning_effort=high" },
 ];
 
 function Section({
@@ -87,6 +108,7 @@ export default function RightPanel({ onClose, overlay }: RightPanelProps) {
 
   const [baseUrl, setBaseUrl] = useState(settings.baseUrl);
   const [modelDraft, setModelDraft] = useState(settings.model);
+  const [modelManual, setModelManual] = useState(false);
   const [temperature, setTemperature] = useState(settings.temperature);
   const [topP, setTopP] = useState(settings.topP);
   const [maxTokens, setMaxTokens] = useState(settings.maxOutputTokens);
@@ -101,6 +123,7 @@ export default function RightPanel({ onClose, overlay }: RightPanelProps) {
   useEffect(() => {
     setBaseUrl(settings.baseUrl);
     setModelDraft(settings.model);
+    setModelManual(false);
     setTemperature(settings.temperature);
     setTopP(settings.topP);
     setMaxTokens(settings.maxOutputTokens);
@@ -164,10 +187,12 @@ export default function RightPanel({ onClose, overlay }: RightPanelProps) {
     if (value !== settings.topP) updateLocalApi({ topP: value });
   };
 
+  const thinkingOn = settings.thinkingLevel !== "NONE";
+
   const commitMaxTokens = () => {
     const value = Math.min(262144, Math.max(1, Math.round(maxTokens || 8192)));
-    setMaxTokens(settings.reasoningMode ? 65536 : value);
-    if (!settings.reasoningMode && value !== settings.maxOutputTokens) {
+    setMaxTokens(thinkingOn ? 65536 : value);
+    if (!thinkingOn && value !== settings.maxOutputTokens) {
       updateLocalApi({ maxOutputTokens: value });
     }
   };
@@ -178,12 +203,6 @@ export default function RightPanel({ onClose, overlay }: RightPanelProps) {
     if (value !== settings.contextWindow) updateLocalApi({ contextWindow: value });
   };
 
-  const toggleReasoning = () => {
-    const next = !settings.reasoningMode;
-    updateLocalApi({ reasoningMode: next, ...(next ? { maxOutputTokens: 65536 } : {}) });
-    if (next) setMaxTokens(65536);
-  };
-
   const closeInstructionModal = () => {
     // Мгновенный flush в systemInstruction.text перед закрытием модалки.
     const current = doc?.chat.systemInstruction?.text ?? "";
@@ -191,9 +210,16 @@ export default function RightPanel({ onClose, overlay }: RightPanelProps) {
     setInstructionModalOpen(false);
   };
 
-  const applyPreset = (value: string) => {
-    setBaseUrl(value);
-    if (value !== settings.baseUrl) updateLocalApi({ baseUrl: value });
+  const applyPreset = async (preset: (typeof PRESETS)[number]) => {
+    setBaseUrl(preset.baseUrl);
+    if (preset.baseUrl !== settings.baseUrl) updateLocalApi({ baseUrl: preset.baseUrl });
+    if (preset.id !== "strata") return;
+    if (!hasApiKey) {
+      setKeyDraft(STRATA_API_KEY);
+      await saveApiKey(STRATA_API_KEY);
+      setNotice("Strata: ключ strata-local сохранён");
+    }
+    await loadModels(true, true);
   };
 
   const handleSaveKey = async () => {
@@ -373,9 +399,10 @@ export default function RightPanel({ onClose, overlay }: RightPanelProps) {
                     type="button"
                     className={clsx("chip py-0.5 text-[9.5px]", {
                       "border-accent-400/40 bg-accent-500/10 text-accent-200":
-                        preset.baseUrl === settings.baseUrl,
+                        normalizeUrlForCompare(preset.baseUrl) ===
+                        normalizeUrlForCompare(settings.baseUrl),
                     })}
-                    onClick={() => applyPreset(preset.baseUrl)}
+                    onClick={() => void applyPreset(preset)}
                   >
                     {preset.label}
                   </button>
@@ -386,31 +413,72 @@ export default function RightPanel({ onClose, overlay }: RightPanelProps) {
             <div>
               <div className="mb-1 flex items-center justify-between">
                 <label className="text-[9.5px] uppercase tracking-wider text-ink-500">Модель</label>
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 text-[9.5px] text-ink-400 hover:text-white"
-                  onClick={() => void loadModels(true)}
-                  disabled={modelsLoading}
-                >
-                  <RefreshCw size={10} className={modelsLoading ? "spin" : undefined} />
-                  обновить
-                </button>
+                <div className="flex items-center gap-2">
+                  {models.length ? (
+                    <button
+                      type="button"
+                      className={clsx(
+                        "inline-flex items-center gap-1 text-[9.5px] text-ink-400 hover:text-white",
+                        modelManual && "text-accent-200",
+                      )}
+                      onClick={() => {
+                        if (modelManual) commitModel();
+                        setModelManual((value) => !value);
+                      }}
+                      title={modelManual ? "Выбрать модель из списка" : "Ввести ID модели вручную"}
+                    >
+                      <PenLine size={10} />
+                      вручную
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 text-[9.5px] text-ink-400 hover:text-white"
+                    onClick={() => void loadModels(true)}
+                    disabled={modelsLoading}
+                  >
+                    <RefreshCw size={10} className={modelsLoading ? "spin" : undefined} />
+                    обновить
+                  </button>
+                </div>
               </div>
-              <input
-                className="field font-mono text-[11px]"
-                value={modelDraft}
-                onChange={(event) => setModelDraft(event.target.value)}
-                onBlur={commitModel}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    event.currentTarget.blur();
-                  }
-                }}
-                placeholder="название модели"
-                list="model-options"
-                spellCheck={false}
-              />
+              {models.length && !modelManual ? (
+                <select
+                  className="field font-mono text-[11px]"
+                  value={settings.model}
+                  onChange={(event) => {
+                    setModelDraft(event.target.value);
+                    updateLocalApi({ model: event.target.value });
+                  }}
+                >
+                  {settings.model &&
+                  !models.some((item) => item.id === settings.model) ? (
+                    <option value={settings.model}>{settings.model} (текущая)</option>
+                  ) : null}
+                  {!settings.model ? <option value="">— выберите модель —</option> : null}
+                  {models.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name && item.name !== item.id ? `${item.id} — ${item.name}` : item.id}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="field font-mono text-[11px]"
+                  value={modelDraft}
+                  onChange={(event) => setModelDraft(event.target.value)}
+                  onBlur={commitModel}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      event.currentTarget.blur();
+                    }
+                  }}
+                  placeholder="название модели"
+                  list="model-options"
+                  spellCheck={false}
+                />
+              )}
               <datalist id="model-options">
                 {models.map((item) => (
                   <option key={item.id} value={item.id}>
@@ -496,33 +564,40 @@ export default function RightPanel({ onClose, overlay }: RightPanelProps) {
           <div className="space-y-3">
             <div
               className={clsx(
-                "flex items-start gap-3 rounded-xl border p-2.5 transition-colors",
-                settings.reasoningMode
+                "rounded-xl border p-2.5 transition-colors",
+                thinkingOn
                   ? "border-violet-300/25 bg-violet-400/[0.06]"
                   : "border-white/[0.08] bg-white/[0.02]",
               )}
             >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5 text-[11px] font-medium text-ink-100">
-                  <Brain size={12} className="text-violet-300" />
-                  Reasoning Mode
-                </div>
-                <div className="mt-0.5 text-[9.5px] leading-relaxed text-ink-500">
-                  Temperature отключается, Max Output Tokens фиксируется на 65 536.
-                </div>
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-ink-100">
+                <Brain size={12} className="text-violet-300" />
+                Thinking Level
               </div>
-              <button
-                type="button"
-                className="toggle mt-0.5"
-                data-on={settings.reasoningMode}
-                onClick={toggleReasoning}
-                role="switch"
-                aria-checked={settings.reasoningMode}
-                title={settings.reasoningMode ? "Выключить reasoning" : "Включить reasoning"}
-              />
+              <div className="mt-0.5 text-[9.5px] leading-relaxed text-ink-500">
+                {thinkingOn
+                  ? "Temperature отключается, Max Output Tokens фиксируется на 65 536, в API передаётся reasoning_effort."
+                  : "Мышление выключено: Temperature и Top P доступны, в API передаётся reasoning_effort=none."}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {THINKING_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    title={option.hint}
+                    className={clsx("chip py-0.5 text-[9.5px]", {
+                      "border-violet-300/45 bg-violet-400/15 text-violet-100":
+                        settings.thinkingLevel === option.value,
+                    })}
+                    onClick={() => updateLocalApi({ thinkingLevel: option.value })}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            {settings.reasoningMode ? (
+            {thinkingOn ? (
               <div className="flex items-center gap-2 rounded-lg border border-violet-300/15 bg-violet-400/[0.04] px-2.5 py-2 text-[9.5px] text-violet-200/80">
                 <Lock size={11} />
                 Temperature скрыта и не отправляется. Max Output Tokens = 65 536.
@@ -569,16 +644,16 @@ export default function RightPanel({ onClose, overlay }: RightPanelProps) {
               <div>
                 <label className="mb-1 flex items-center gap-1 text-[9.5px] uppercase tracking-wider text-ink-500">
                   Max Output
-                  {settings.reasoningMode ? <Lock size={9} /> : null}
+                  {thinkingOn ? <Lock size={9} /> : null}
                 </label>
                 <input
                   type="number"
                   className="field font-mono text-[11px] disabled:opacity-60"
-                  value={settings.reasoningMode ? 65536 : maxTokens}
+                  value={thinkingOn ? 65536 : maxTokens}
                   min={1}
                   max={262144}
                   step={256}
-                  disabled={settings.reasoningMode}
+                  disabled={thinkingOn}
                   onChange={(event) => setMaxTokens(Number(event.target.value))}
                   onBlur={commitMaxTokens}
                   onKeyDown={(event) => {

@@ -18,7 +18,12 @@ from .attachments import (
     get_attachment_bytes,
     is_text_attachment,
 )
-from .config import CHAT_DIR
+from .config import (
+    CHAT_DIR,
+    REASONING_EFFORT_BY_LEVEL,
+    THINKING_MAX_OUTPUT_TOKENS,
+    normalize_thinking_level,
+)
 from .tokens import count_tokens
 from .utils import utc_now_iso
 
@@ -278,7 +283,66 @@ def _attachment_text(raw_bytes: bytes, name: str) -> str | None:
     return text
 
 
-def build_messages(raw: dict[str, Any], *, send_attachments: bool = True) -> list[dict[str, Any]]:
+MAX_SYSTEM_REMINDER_RULES_CHARS = 1200
+
+
+def build_depth_reminder(system_text: str, thinking_level: str) -> str:
+    """Служебный блок <system_reminder> для защиты от затухания системного промпта."""
+    level = normalize_thinking_level(thinking_level)
+    parts: list[str] = []
+    if system_text.strip():
+        rules = system_text.strip()
+        if len(rules) > MAX_SYSTEM_REMINDER_RULES_CHARS:
+            rules = rules[:MAX_SYSTEM_REMINDER_RULES_CHARS].rstrip() + " […]"
+        parts.append(
+            "Неукоснительно соблюдай ключевые правила системной инструкции этого чата:\n"
+            + rules
+        )
+    if level in ("HIGH", "EXTRA_HIGH"):
+        parts.append(
+            "Перед ответом рассмотри 3–4 альтернативных сценария решения — от самого простого "
+            "к самому сложному; сравни их, явно отметь подводные камни, риски и ограничения "
+            "каждого варианта; выбери лучший и укажи запасной план (fallback) на случай, "
+            "если он не сработает."
+        )
+    if level == "EXTRA_HIGH":
+        parts.append(
+            "Дополнительно: сделай максимально глубокий пошаговый разбор — декомпозируй задачу, "
+            "проверь каждую гипотезу, приведи расчёты и промежуточные проверки, зафиксируй "
+            "принятые допущения."
+        )
+    if not parts:
+        return ""
+    return "<system_reminder>\n" + "\n\n".join(parts) + "\n</system_reminder>"
+
+
+def inject_depth_reminder(
+    messages: list[dict[str, Any]], system_text: str, thinking_level: str
+) -> None:
+    """Вставляет <system_reminder> перед последним сообщением пользователя (в памяти,
+    исходный JSON чата на диске не изменяется)."""
+    reminder = build_depth_reminder(system_text, thinking_level)
+    if not reminder:
+        return
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            content.insert(0, {"type": "text", "text": reminder})
+        else:
+            message["content"] = f"{reminder}\n\n{content or ''}".strip()
+        return
+    messages.append({"role": "user", "content": reminder})
+
+
+def build_messages(
+    raw: dict[str, Any],
+    *,
+    send_attachments: bool = True,
+    thinking_level: str = "NONE",
+) -> list[dict[str, Any]]:
     chunks = raw.get("chunkedPrompt", {}).get("chunks", [])
     system = raw.get("systemInstruction", {})
     system_text = str(system.get("text") or "") if isinstance(system, dict) else ""
@@ -410,6 +474,7 @@ def build_messages(raw: dict[str, Any], *, send_attachments: bool = True) -> lis
         raise LLMError("В контексте нет сообщений для генерации", 400)
     if system_text.strip():
         messages.insert(0, {"role": "system", "content": system_text.strip()})
+    inject_depth_reminder(messages, system_text, thinking_level)
     return messages
 
 
@@ -498,7 +563,7 @@ async def stream_completion(
     api_key: str | None,
     model: str,
     messages: list[dict[str, Any]],
-    reasoning_mode: bool,
+    thinking_level: str,
     temperature: float,
     top_p: float,
     max_output_tokens: int,
@@ -507,14 +572,17 @@ async def stream_completion(
     if not model:
         raise LLMError("Выберите модель локального API", 400)
 
-    effective_max = 65536 if reasoning_mode else max(1, int(max_output_tokens))
+    level = normalize_thinking_level(thinking_level)
+    thinking_on = level != "NONE"
+    effective_max = THINKING_MAX_OUTPUT_TOKENS if thinking_on else max(1, int(max_output_tokens))
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "stream": True,
         "max_tokens": effective_max,
+        "reasoning_effort": REASONING_EFFORT_BY_LEVEL.get(level, "none"),
     }
-    if not reasoning_mode:
+    if not thinking_on:
         payload["temperature"] = float(temperature)
         payload["top_p"] = float(top_p)
 

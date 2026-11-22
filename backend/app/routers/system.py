@@ -8,7 +8,13 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..config import CHAT_DIR, public_settings, load_settings, save_settings
+from ..config import (
+    CHAT_DIR,
+    normalize_thinking_level,
+    public_settings,
+    load_settings,
+    save_settings,
+)
 from ..tokens import count_request
 from ..utils import utc_now_iso
 
@@ -23,6 +29,7 @@ class SettingsUpdate(BaseModel):
     clearApiKey: bool = False
     model: str | None = None
     reasoningMode: bool | None = None
+    thinkingLevel: str | None = None
     temperature: float | None = None
     maxOutputTokens: int | None = None
     topP: float | None = None
@@ -77,9 +84,12 @@ def update_settings(payload: SettingsUpdate) -> dict[str, Any]:
     if payload.clearApiKey:
         current["apiKey"] = ""
 
-    for key in ("model", "reasoningMode", "temperature", "maxOutputTokens", "topP", "sendAttachments", "contextWindow"):
+    for key in ("model", "reasoningMode", "thinkingLevel", "temperature", "maxOutputTokens", "topP", "sendAttachments", "contextWindow"):
         if key in changed and changed[key] is not None:
             current[key] = changed[key]
+
+    current["thinkingLevel"] = normalize_thinking_level(current.get("thinkingLevel"))
+    current["reasoningMode"] = current["thinkingLevel"] != "NONE"
 
     current["temperature"] = min(2.0, max(0.0, float(current.get("temperature", 1.0))))
     current["topP"] = min(1.0, max(0.0, float(current.get("topP", 0.95))))

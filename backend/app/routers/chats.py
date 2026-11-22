@@ -14,7 +14,13 @@ from starlette.concurrency import run_in_threadpool
 
 from .. import gas_store
 from ..attachments import ATTACHMENT_SLOTS, get_attachment_bytes
-from ..config import load_settings
+from ..config import (
+    DEFAULT_THINKING_LEVEL,
+    GAS_THINKING_BY_LEVEL,
+    load_settings,
+    normalize_thinking_level,
+    THINKING_MAX_OUTPUT_TOKENS,
+)
 from ..llm import (
     LLMError,
     build_messages,
@@ -50,6 +56,7 @@ class LocalApiSettings(BaseModel):
     baseUrl: str = "http://localhost:1234/v1"
     model: str = ""
     reasoningMode: bool = False
+    thinkingLevel: str = DEFAULT_THINKING_LEVEL
     temperature: float = 1.0
     maxOutputTokens: int = 8192
     topP: float = 0.95
@@ -74,6 +81,7 @@ def _merged_settings(raw: dict[str, Any], body: GenerateBody | None = None) -> L
         "baseUrl": global_settings.get("baseUrl") or "http://localhost:1234/v1",
         "model": global_settings.get("model") or "",
         "reasoningMode": bool(global_settings.get("reasoningMode", False)),
+        "thinkingLevel": normalize_thinking_level(global_settings.get("thinkingLevel")),
         "temperature": float(global_settings.get("temperature", 1.0)),
         "maxOutputTokens": int(global_settings.get("maxOutputTokens", 8192)),
         "topP": float(global_settings.get("topP", 0.95)),
@@ -85,9 +93,23 @@ def _merged_settings(raw: dict[str, Any], body: GenerateBody | None = None) -> L
     for key in values:
         if key in local and local[key] is not None:
             values[key] = local[key]
+    # Обратная совместимость старых чатов: thinkingLevel в localApi мог отсутствовать.
+    if "thinkingLevel" not in local or local.get("thinkingLevel") is None:
+        if "reasoningMode" in local and local.get("reasoningMode") is not None:
+            values["thinkingLevel"] = "HIGH" if local["reasoningMode"] else "NONE"
+        elif run_settings.get("thinkingLevel"):
+            values["thinkingLevel"] = normalize_thinking_level(run_settings["thinkingLevel"])
+        else:
+            values["thinkingLevel"] = global_settings.get("thinkingLevel", DEFAULT_THINKING_LEVEL)
     if body and body.settings:
-        for key, value in body.settings.model_dump().items():
+        sent = body.settings.model_dump(exclude_unset=True)
+        for key, value in sent.items():
             values[key] = value
+        if "thinkingLevel" not in sent and "reasoningMode" in sent:
+            values["thinkingLevel"] = "HIGH" if body.settings.reasoningMode else "NONE"
+    values["thinkingLevel"] = normalize_thinking_level(values["thinkingLevel"])
+    # reasoningMode остаётся производным флагом «мышление включено» для старых клиентов.
+    values["reasoningMode"] = values["thinkingLevel"] != "NONE"
     values["temperature"] = min(2.0, max(0.0, float(values["temperature"])))
     values["topP"] = min(1.0, max(0.0, float(values["topP"])))
     values["maxOutputTokens"] = min(262144, max(1, int(values["maxOutputTokens"])))
@@ -180,7 +202,11 @@ async def generate(chat_id: str, payload: GenerateBody) -> StreamingResponse:
     context_raw["chunkedPrompt"] = {**chunked, "chunks": kept}
     try:
         messages = await run_in_threadpool(
-            build_messages, context_raw, send_attachments=settings.sendAttachments
+            lambda: build_messages(
+                context_raw,
+                send_attachments=settings.sendAttachments,
+                thinking_level=settings.thinkingLevel,
+            )
         )
     except LLMError as exc:
         raise HTTPException(exc.status_code, exc.message) from exc
@@ -197,6 +223,7 @@ async def generate(chat_id: str, payload: GenerateBody) -> StreamingResponse:
                 "messages": len(messages),
                 "model": settings.model,
                 "reasoningMode": settings.reasoningMode,
+                "thinkingLevel": settings.thinkingLevel,
             }
         )
         final: dict[str, Any] | None = None
@@ -206,7 +233,7 @@ async def generate(chat_id: str, payload: GenerateBody) -> StreamingResponse:
                 api_key=str(load_settings().get("apiKey") or ""),
                 model=settings.model,
                 messages=messages,
-                reasoning_mode=settings.reasoningMode,
+                thinking_level=settings.thinkingLevel,
                 temperature=settings.temperature,
                 top_p=settings.topP,
                 max_output_tokens=settings.maxOutputTokens,
@@ -253,11 +280,14 @@ async def generate(chat_id: str, payload: GenerateBody) -> StreamingResponse:
             run_settings["temperature"] = settings.temperature
             run_settings["topP"] = settings.topP
             run_settings["maxOutputTokens"] = (
-                65536 if settings.reasoningMode else settings.maxOutputTokens
+                THINKING_MAX_OUTPUT_TOKENS
+                if settings.thinkingLevel != "NONE"
+                else settings.maxOutputTokens
             )
             run_settings["localApi"] = settings.model_dump()
-            if settings.reasoningMode:
-                run_settings["thinkingLevel"] = "THINKING_HIGH"
+            run_settings["thinkingLevel"] = GAS_THINKING_BY_LEVEL.get(
+                settings.thinkingLevel, "THINKING_HIGH"
+            )
             raw["runSettings"] = run_settings
             doc = await run_in_threadpool(gas_store.save_document, chat_id, raw)
         except Exception as exc:

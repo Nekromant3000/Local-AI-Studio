@@ -22,6 +22,7 @@ import type {
   ModelInfo,
   PendingAttachment,
   StreamingState,
+  ThinkingLevel,
   TokenStats,
 } from "../types";
 
@@ -81,7 +82,7 @@ interface AppState {
   updateGlobalSettings: (partial: Partial<AppSettings>) => Promise<void>;
   saveApiKey: (key: string) => Promise<boolean>;
   clearApiKey: () => Promise<void>;
-  loadModels: (force?: boolean) => Promise<void>;
+  loadModels: (force?: boolean, autoSelectFirst?: boolean) => Promise<void>;
   sendMessage: (
     text: string,
     attachments: PendingAttachment[],
@@ -105,6 +106,7 @@ const defaultSettings: AppSettings = {
   baseUrl: "http://localhost:1234/v1",
   model: "",
   reasoningMode: false,
+  thinkingLevel: "HIGH",
   temperature: 1.0,
   maxOutputTokens: 8192,
   topP: 0.95,
@@ -112,6 +114,46 @@ const defaultSettings: AppSettings = {
   contextWindow: 131072,
   hasApiKey: false,
 };
+
+const THINKING_LEVEL_VALUES: ThinkingLevel[] = ["NONE", "LOW", "MEDIUM", "HIGH", "EXTRA_HIGH"];
+
+// Отображение нашего уровня в GAS-поле runSettings.thinkingLevel (обратная совместимость).
+const GAS_THINKING_BY_LEVEL: Record<ThinkingLevel, string> = {
+  NONE: "THINKING_NONE",
+  LOW: "THINKING_LOW",
+  MEDIUM: "THINKING_HIGH",
+  HIGH: "THINKING_HIGH",
+  EXTRA_HIGH: "THINKING_HIGH",
+};
+
+// Чтение уровней из старых GAS-чатов.
+const GAS_LEVEL_ALIASES: Record<string, ThinkingLevel> = {
+  THINKING_NONE: "NONE",
+  THINKING_MINIMAL: "LOW",
+  THINKING_LOW: "LOW",
+  THINKING_HIGH: "HIGH",
+};
+
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return THINKING_LEVEL_VALUES.includes(value as ThinkingLevel);
+}
+
+// Цепочка совместимости: localApi.thinkingLevel → legacy localApi.reasoningMode →
+// GAS runSettings.thinkingLevel → глобальная настройка → HIGH.
+function resolveThinkingLevel(
+  doc: ChatDocument | null,
+  settings: AppSettings,
+): ThinkingLevel {
+  const local = doc?.chat.runSettings?.localApi;
+  if (isThinkingLevel(local?.thinkingLevel)) return local.thinkingLevel;
+  if (typeof local?.reasoningMode === "boolean") {
+    return local.reasoningMode ? "HIGH" : "NONE";
+  }
+  const gas = doc?.chat.runSettings?.thinkingLevel;
+  if (gas && GAS_LEVEL_ALIASES[String(gas)]) return GAS_LEVEL_ALIASES[String(gas)];
+  if (isThinkingLevel(settings.thinkingLevel)) return settings.thinkingLevel;
+  return "HIGH";
+}
 
 function cloneChat(chat: GasChat): GasChat {
   return structuredClone(chat);
@@ -131,11 +173,13 @@ function errorMessage(error: unknown): string {
 
 function localSettingsFor(doc: ChatDocument | null, settings: AppSettings): LocalApiSettings {
   const local = doc?.chat.runSettings?.localApi;
-  const reasoning = local?.reasoningMode ?? settings.reasoningMode;
+  const thinkingLevel = resolveThinkingLevel(doc, settings);
+  const reasoning = thinkingLevel !== "NONE";
   return {
     baseUrl: local?.baseUrl || settings.baseUrl,
     model: local?.model || settings.model || "",
-    reasoningMode: Boolean(reasoning),
+    reasoningMode: reasoning,
+    thinkingLevel,
     temperature: local?.temperature ?? settings.temperature,
     maxOutputTokens: reasoning ? 65536 : local?.maxOutputTokens ?? settings.maxOutputTokens,
     topP: local?.topP ?? settings.topP,
@@ -146,7 +190,10 @@ function localSettingsFor(doc: ChatDocument | null, settings: AppSettings): Loca
 
 function normalizeLocal(partial: Partial<LocalApiSettings>): Partial<LocalApiSettings> {
   const next = { ...partial };
-  if (partial.reasoningMode === true) {
+  if (partial.thinkingLevel) {
+    next.reasoningMode = partial.thinkingLevel !== "NONE";
+    if (next.reasoningMode) next.maxOutputTokens = 65536;
+  } else if (partial.reasoningMode === true) {
     next.maxOutputTokens = 65536;
   }
   return next;
@@ -557,6 +604,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const runSettings = chat.runSettings ?? {};
       const local = runSettings.localApi ?? {};
       runSettings.localApi = { ...local, ...normalized };
+      if (normalized.thinkingLevel) {
+        runSettings.thinkingLevel = GAS_THINKING_BY_LEVEL[normalized.thinkingLevel];
+      }
       runSettings.temperature = localSettingsFor(
         { ...get().doc!, chat },
         { ...get().settings, ...normalized },
@@ -603,7 +653,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
     }
   },
 
-  loadModels: async (force = false) => {
+  loadModels: async (force = false, autoSelectFirst = false) => {
     const doc = get().doc;
     const local = localSettingsFor(doc, get().settings);
     if (!force && get().models.length && get().modelsBaseUrl === local.baseUrl) return;
@@ -612,9 +662,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
       const response = await api.getModels(local.baseUrl);
       set({ models: response.models, modelsBaseUrl: response.baseUrl, modelsLoading: false });
       const currentModel = doc?.chat.runSettings?.localApi?.model || get().settings.model;
-      if (!currentModel && response.models[0]) {
-        if (doc) get().updateLocalApi({ model: response.models[0].id });
-        else void get().updateGlobalSettings({ model: response.models[0].id });
+      const first = response.models[0];
+      const missing = Boolean(currentModel) && !response.models.some((m) => m.id === currentModel);
+      if (first && (!currentModel || (autoSelectFirst && missing))) {
+        if (doc) get().updateLocalApi({ model: first.id });
+        else void get().updateGlobalSettings({ model: first.id });
       }
     } catch (error) {
       set({ modelsError: errorMessage(error), modelsLoading: false, models: [] });

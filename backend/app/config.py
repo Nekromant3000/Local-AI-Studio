@@ -30,11 +30,54 @@ THUMB_DIR = DATA_DIR / "thumbnails"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
+# Уровни мышления (Thinking Level) — наш внутренний канон.
+THINKING_LEVELS = ("NONE", "LOW", "MEDIUM", "HIGH", "EXTRA_HIGH")
+DEFAULT_THINKING_LEVEL = "HIGH"
+THINKING_MAX_OUTPUT_TOKENS = 65536
+
+# Отображение в аргумент reasoning_effort OpenAI-совместимых API.
+REASONING_EFFORT_BY_LEVEL: dict[str, str] = {
+    "NONE": "none",
+    "LOW": "low",
+    "MEDIUM": "medium",
+    "HIGH": "high",
+    "EXTRA_HIGH": "high",
+}
+
+# Запись в GAS-поле runSettings.thinkingLevel (обратная совместимость с GAS).
+GAS_THINKING_BY_LEVEL: dict[str, str] = {
+    "NONE": "THINKING_NONE",
+    "LOW": "THINKING_LOW",
+    "MEDIUM": "THINKING_HIGH",
+    "HIGH": "THINKING_HIGH",
+    "EXTRA_HIGH": "THINKING_HIGH",
+}
+
+# Чтение устаревших GAS-значений.
+GAS_LEVEL_ALIASES: dict[str, str] = {
+    "THINKING_NONE": "NONE",
+    "THINKING_MINIMAL": "LOW",
+    "THINKING_LOW": "LOW",
+    "THINKING_HIGH": "HIGH",
+}
+
+
+def normalize_thinking_level(value: Any, fallback: str = DEFAULT_THINKING_LEVEL) -> str:
+    """Приводит значение уровня мышления к канону THINKING_LEVELS."""
+    text = str(value or "").strip().upper()
+    if text in THINKING_LEVELS:
+        return text
+    if text in GAS_LEVEL_ALIASES:
+        return GAS_LEVEL_ALIASES[text]
+    return fallback
+
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     "baseUrl": "http://localhost:1234/v1",
     "apiKey": "",
     "model": "",
     "reasoningMode": False,
+    "thinkingLevel": DEFAULT_THINKING_LEVEL,
     "temperature": 1.0,
     "maxOutputTokens": 8192,
     "topP": 0.95,
@@ -77,6 +120,9 @@ def load_settings() -> dict[str, Any]:
     for key, value in stored.items():
         if key in settings:
             settings[key] = value
+    if "thinkingLevel" not in stored and "reasoningMode" in stored:
+        settings["thinkingLevel"] = "HIGH" if stored.get("reasoningMode") else "NONE"
+    settings["thinkingLevel"] = normalize_thinking_level(settings.get("thinkingLevel"))
     return settings
 
 
@@ -98,10 +144,12 @@ def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
 
 
 def chat_local_defaults(settings: dict[str, Any]) -> dict[str, Any]:
+    thinking_level = normalize_thinking_level(settings.get("thinkingLevel"))
     return {
         "baseUrl": settings.get("baseUrl", DEFAULT_SETTINGS["baseUrl"]),
         "model": settings.get("model", ""),
-        "reasoningMode": bool(settings.get("reasoningMode", False)),
+        "reasoningMode": thinking_level != "NONE",
+        "thinkingLevel": thinking_level,
         "temperature": settings.get("temperature", 1.0),
         "maxOutputTokens": settings.get("maxOutputTokens", 8192),
         "topP": settings.get("topP", 0.95),

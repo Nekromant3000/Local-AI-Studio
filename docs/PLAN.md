@@ -32,10 +32,10 @@ Env-переменные: `LOCAL_AI_STUDIO_HOST/PORT/RELOAD`, `GAS_CHAT_DIR`,
 | Модуль | Ответственность |
 |---|---|
 | `app/main.py` | приложение, lifespan (очистка uploads/thumbnails по сроку), CORS, обработчики ошибок, статика `frontend/dist`, корневой `/health` |
-| `app/config.py` | пути (`CHAT_DIR`, `DATA_DIR`, uploads/backups/thumbnails, `settings.json`), `DEFAULT_SETTINGS`, `DEFAULT_CHAT_RUN_SETTINGS` (в т. ч. `thinkingLevel`), атомарное сохранение настроек |
+| `app/config.py` | пути (`CHAT_DIR`, `DATA_DIR`, uploads/backups/thumbnails, `settings.json`), `DEFAULT_SETTINGS`, `DEFAULT_CHAT_RUN_SETTINGS` (в т. ч. `thinkingLevel`), константы уровней мышления (`THINKING_LEVELS`, маппинги в `reasoning_effort` и GAS `thinkingLevel`, `normalize_thinking_level`), атомарное сохранение настроек |
 | `app/gas_store.py` | индекс папки GAS (mtime-кэш), `get_document/create_chat/save_document/rename_chat/delete_chat` (в `data/trash`), бэкапы перед записью, `estimate_chat_tokens`, `default_chat` |
 | `app/attachments.py` | разбор `driveImage/inlineImage/driveDocument/youtubeVideo/...`, санитизация чата перед отправкой в браузер (inline base64 → lazy-endpoint), «обезвреживание» и реконструкция (`rehydrate_chat`) при сохранении, привязка Drive-объектов к локальным файлам, Temp-файлы загрузок |
-| `app/llm.py` | OpenAI-совместимый стриминг: `list_models`, `build_messages` (чаты GAS → messages с картинками/файлами), `ThinkTagFilter` (перехват `<think>` в reasoning-канал), поддержка `reasoning_content`, подготовка усечения контекста, генерация GAS-чанков ответа (`make_generated_chunks`, `thinkingBudget: -1`) |
+| `app/llm.py` | OpenAI-совместимый стриминг: `list_models`, `build_messages` (чаты GAS → messages с картинками/файлами + depth-prompting блок `<system_reminder>`), `ThinkTagFilter` (перехват `<think>` в reasoning-канал), поддержка `reasoning_content`, `reasoning_effort` по уровню мышления, подготовка усечения контекста, генерация GAS-чанков ответа (`make_generated_chunks`, `thinkingBudget: -1`) |
 | `app/tokens.py` | tiktoken с кэшем и graceful fallback на эвристику |
 | `app/utils.py` | атомарная запись JSON, валидация имён, id/имена файлов чатов |
 | `app/routers/system.py` | `/api/health`, `/api/settings` GET/PUT (валидация baseUrl/ключей/лимитов), `/api/tokens/count` |
@@ -52,7 +52,7 @@ Env-переменные: `LOCAL_AI_STUDIO_HOST/PORT/RELOAD`, `GAS_CHAT_DIR`,
 | `store/useAppStore.ts` | единый Zustand-store: чаты, документ, оптимистичные правки через `updateChat` + debounce-сохранение, SSE-генерация, настройки (`useLocalSettings` = слияние глобальных и `runSettings.localApi` чата), `setSystemInstruction`, загрузка моделей |
 | `lib/api.ts`, `lib/frames.ts` | клиент API; разбор GAS-чанков в «фреймы» (сообщения, мысли, вложения, code execution, grounding) |
 | `components/` | `Sidebar` (поиск/создание/переименование/удаление), `ChatWorkspace` + `MessageFrame` + `StreamingMessage` + `ThinkingBlock` (тайминг размышлений), `Composer` (pendingInputs, стоп-генерация), `AttachmentPicker/Grid` (выбор слотов image/file, локальные файлы, превью), `PreviewModal`, `RightPanel`, `CodeBlock`, `MarkdownView`, `Modal`, `ConfirmDialog`, `CopyButton`, `EmptyState` |
-| `RightPanel.tsx` | панель «Контекст и модель»: статистика токенов с прогресс-баром; System Instructions (инлайн + модалка, см. §5); «Локальный API» — Base URL + пресеты **Strata / LM Studio / Ollama / llama.cpp**, модель с datalist из `/api/llm/models`, API Key (глобально); параметры генерации — Reasoning Mode, Temperature, Top P, Max Output, Context Window, отправка вложений |
+| `RightPanel.tsx` | панель «Контекст и модель»: статистика токенов с прогресс-баром; System Instructions (инлайн + модалка, см. §5); «Локальный API» — Base URL + пресеты **Strata / LM Studio / Ollama / llama.cpp** (Strata: ключ `strata-local` + автообновление списка с автовыбором модели), модель — dropdown из `/api/llm/models` с режимом ручного ввода, API Key (глобально); параметры генерации — Thinking Level (`Off / Low / Medium / High / Extra High`), Temperature/Max Output (блокируются при мышлении), Top P, Context Window, отправка вложений |
 
 ## 4. Формат GAS (что реально встречается в чатах)
 
@@ -76,7 +76,8 @@ Env-переменные: `LOCAL_AI_STUDIO_HOST/PORT/RELOAD`, `GAS_CHAT_DIR`,
 
 **Генерация**
 - SSE-стриминг из OpenAI-совместимого API, ответ дописывается в GAS-чанки (включая thought-чанки с `thinkingBudget: -1`).
-- Reasoning Mode: без `temperature`, `max_tokens=65536`; перехват `<think>`-тегов и поля `reasoning_content`.
+- Thinking Level: для всех уровней кроме `Off` — без `temperature`, `max_tokens=65536`, в запрос передаётся `reasoning_effort` (`none/low/medium/high`); перехват `<think>`-тегов и поля `reasoning_content`.
+- Depth Prompting: при заданной `systemInstruction.text` или уровнях `High/Extra High` перед последним пользовательским сообщением (только в памяти запроса, JSON чата на диске не меняется) вставляется блок `<system_reminder>` с ключевыми правилами системной инструкции, а для `High/Extra High` — с требованием 3–4 альтернативных сценариев, подводных камней и запасного плана (`Extra High` — максимально глубокий пошаговый разбор).
 - Учёт токенов (tiktoken/fallback), проверка окна контекста, подготовка усечения, лимит 12 изображений на запрос; мысли не отправляются в контекст модели.
 
 **Вложения**
@@ -85,7 +86,12 @@ Env-переменные: `LOCAL_AI_STUDIO_HOST/PORT/RELOAD`, `GAS_CHAT_DIR`,
 **Настройки**
 - Глобальные (`data/settings.json`) + per-chat `runSettings.localApi`; API-ключ хранится только глобально.
 - Список моделей по Base URL с обновлением; статус доступности API.
-- **Пресет Strata** (`http://127.0.0.1:47831/v1`) — четвёртая кнопка в блоке «Локальный API», активная подсветка при совпадении Base URL (2026-11-22).
+- **Задача №2 выполнена (2026-11-22)**:
+  - **Thinking Level** в правой панели: компактный селектор `Off / Low / Medium / High / Extra High` (по умолчанию `High`) вместо тумблера Reasoning Mode; уровень хранится в `runSettings.localApi.thinkingLevel` + дублируется в GAS-поле `runSettings.thinkingLevel` (`THINKING_NONE/LOW/HIGH`); обратная совместимость со старыми чатами (цепочка: `localApi.thinkingLevel` → legacy `reasoningMode` → GAS `thinkingLevel` → глобальная настройка). При любом уровне кроме `Off` Temperature скрыт/не отправляется, `Max Output Tokens = 65536`, бэкенд передаёт `reasoning_effort`.
+  - **Depth Prompting** (см. «Генерация»): защита от затухания системного промпта через `<system_reminder>`.
+  - **Модель** — полноценный dropdown из `/api/llm/models` (с опцией ручного ввода ID).
+  - **Пресет Strata**: Base URL `http://localhost:47831/v1`; при пустом API KEY автоматически сохраняется `strata-local`, затем немедленное обновление списка моделей с автовыбором первой доступной (например `iq3_s`), если текущей модели в новом списке нет.
+  - **UI**: нижняя панель ввода («Спросите модель…») скрывается, когда открыто полноэкранное окно «История чатов».
 - **Модалка System Instructions** — кнопка-иконка `Maximize2` в заголовке секции; широкое модальное окно (~70% высоты экрана, тёмная тема, через общий `Modal`), крупный textarea, счётчик символов в футере, синхронное автосохранение в `chat.systemInstruction.text` (debounce 500 мс + немедленный flush при закрытии); закрытие — «Готово», крестик, Esc, клик по фону (2026-11-22).
 
 **UX**
@@ -100,11 +106,9 @@ Env-переменные: `LOCAL_AI_STUDIO_HOST/PORT/RELOAD`, `GAS_CHAT_DIR`,
 
 ## 7. Дальнейший план (в порядке приоритета)
 
-1. **Thinking Level** — селектор `runSettings.thinkingLevel`
-   (`NONE / MINIMAL / LOW / MEDIUM / HIGH`, значения GAS) в правой панели;
-   маппинг в параметры конкретного провайдера (`reasoning_effort`,
-   `thinking: {type:"enabled", budget_tokens:n}` и пр.) вместо нынешнего
-   булева Reasoning Mode; отображение уровня в шапке чата.
+1. ~~**Thinking Level**~~ — ✅ выполнено в рамках Задачи №2 (2026-11-22): селектор `Off/Low/Medium/High/Extra High` в правой панели,
+   маппинг в `reasoning_effort`, GAS-совместимый `runSettings.thinkingLevel`, depth prompting.
+   Остаётся на будущее: отображение уровня в шапке чата.
 2. **Парсеры источников во embeddings-контекст**:
    - YouTube (`youtubeVideo`-чанки и обычные ссылки): извлечение субтитров/транскрипта → текстовый вложение-контекст.
    - URL-парсер: `GET /api/parse/url` → читаемый текст страницы (trafilatura/readability-подобный извлечение).

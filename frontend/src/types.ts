@@ -126,10 +126,13 @@ export interface ChatDocument {
   chat: GasChat;
 }
 
+export type ThinkingLevel = "NONE" | "LOW" | "MEDIUM" | "HIGH" | "EXTRA_HIGH";
+
 export interface LocalApiSettings {
   baseUrl: string;
   model: string;
   reasoningMode: boolean;
+  thinkingLevel: ThinkingLevel;
   temperature: number;
   maxOutputTokens: number;
   topP: number;
@@ -188,6 +191,7 @@ export interface GenerateStartEvent {
   messages: number;
   model: string;
   reasoningMode: boolean;
+  thinkingLevel?: string;
 }
 
 export interface GenerateDeltaEvent {
