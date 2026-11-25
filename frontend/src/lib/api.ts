@@ -393,3 +393,18 @@ export function localAssetUrl(name: string, download = false): string {
 export function localThumbUrl(name: string, width = 280): string {
   return `${API_BASE}/assets/local/thumb?name=${encodeURIComponent(name)}&w=${width}`;
 }
+
+/**
+ * Список PNG-страниц `.docx` по его assetId. Работает всегда, даже если
+ * `docxPagesUrl` не дожил до следующей загрузки чата: бэкенд берёт исходный
+ * файл из `data/attachments` и дорисовывает страницы по требованию.
+ */
+export function docxPagesUrl(assetId: string): string {
+  return `${API_BASE}/assets/docx-pages/${encodeURIComponent(assetId)}`;
+}
+
+/** Оригинальный `.docx` из `data/attachments` по его assetId. */
+export function docxFileUrl(assetId: string, download = false): string {
+  const base = `${API_BASE}/assets/docx-file/${encodeURIComponent(assetId)}`;
+  return download ? `${base}?download=true` : base;
+}

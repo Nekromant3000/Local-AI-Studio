@@ -236,6 +236,13 @@ function attachmentChunk(
       resolved: true,
       tempId: upload.upload.tempId,
       previewUrl: upload.upload.previewUrl,
+      // сайдкей .docx: карточка документа и постраничный предпросмотр работают
+      // сразу, до перезагрузки чата (эти поля не пишутся в JSON GAS)
+      id: upload.upload.assetId ?? null,
+      thumbUrl: upload.upload.thumbUrl ?? null,
+      docxUrl: upload.upload.docxUrl ?? null,
+      docxPagesUrl: upload.upload.docxPagesUrl ?? null,
+      convertedFrom: upload.upload.convertedFrom ?? null,
     },
   };
   return { chunk, slot };

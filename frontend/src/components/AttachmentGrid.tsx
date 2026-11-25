@@ -13,7 +13,7 @@ import {
   Youtube,
 } from "lucide-react";
 import type { DisplayTurn, LocalAsset } from "../types";
-import { chatAssetUrl, localAssetUrl } from "../lib/api";
+import { chatAssetUrl, docxFileUrl, docxPagesUrl, localAssetUrl } from "../lib/api";
 import { formatBytes } from "../lib/format";
 import { useAppStore } from "../store/useAppStore";
 import AttachmentPicker from "./AttachmentPicker";
@@ -31,9 +31,41 @@ function canBind(meta: LocalAsset): boolean {
   return meta.slot === "driveImage" || meta.slot === "driveDocument" || meta.slot === "driveVideo";
 }
 
+/** sha1-идентификатор сайдкея .docx в `backend/data/attachments`. */
+const DOCX_ASSET_ID_RE = /^[a-f0-9]{40}$/;
+
+/**
+ * assetId сайдкея .docx: берём из `_localAsset.id`, а если он не дожил до
+ * этой загрузки чата — восстанавливаем из любого известного docx-URL.
+ */
+function docxAssetId(meta: LocalAsset): string | null {
+  const direct = String(meta.id || "").trim();
+  if (DOCX_ASSET_ID_RE.test(direct)) return direct;
+  for (const url of [meta.docxPagesUrl, meta.docxUrl, meta.thumbUrl]) {
+    const match = /\/docx-(?:pages|file|thumb)\/([a-f0-9]{40})/.exec(url || "");
+    if (match) return match[1];
+  }
+  return null;
+}
+
 /** Вложение, за которым на диске стоит оригинальный .docx (текст извлечён в Markdown). */
 function isDocxBacked(meta: LocalAsset): boolean {
-  return Boolean(meta.docxUrl && meta.thumbUrl);
+  if (meta.convertedFrom === "docx") return true;
+  if (docxAssetId(meta)) return true;
+  return meta.name.toLowerCase().endsWith(".docx");
+}
+
+/** Страницы запрашиваем по assetId всегда — URL из чата может быть потерян. */
+function docxPagesSource(meta: LocalAsset): string | null {
+  const assetId = docxAssetId(meta);
+  if (assetId) return docxPagesUrl(assetId);
+  return meta.docxPagesUrl || null;
+}
+
+function docxThumbSource(meta: LocalAsset): string | null {
+  if (meta.thumbUrl) return meta.thumbUrl;
+  const assetId = docxAssetId(meta);
+  return assetId ? `/api/assets/docx-thumb/${assetId}` : null;
 }
 
 function previewSource(chatId: string, attachment: Attachment): string | null {
@@ -49,6 +81,8 @@ function previewSource(chatId: string, attachment: Attachment): string | null {
 function downloadSource(chatId: string, attachment: Attachment): string | null {
   const { meta, index, slot } = attachment;
   if (meta.docxUrl) return `${meta.docxUrl}?download=true`;
+  const assetId = docxAssetId(meta);
+  if (assetId) return docxFileUrl(assetId, true);
   if (isInline(meta)) return chatAssetUrl(chatId, index, slot, true);
   if (meta.localPath) return localAssetUrl(meta.localPath, true);
   if (meta.previewUrl) return meta.previewUrl;
@@ -243,7 +277,8 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
   // .docx: крупный лист A4 с миниатюрой первой страницы, реальным именем и кнопками.
   const renderDocxCard = (attachment: Attachment) => {
     const key = `${attachment.index}:${attachment.slot}`;
-    const showThumb = Boolean(attachment.meta.thumbUrl) && !broken[key];
+    const thumb = docxThumbSource(attachment.meta);
+    const showThumb = Boolean(thumb) && !broken[key];
     return (
       <div
         key={key}
@@ -257,7 +292,7 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
         >
           {showThumb ? (
             <img
-              src={attachment.meta.thumbUrl || ""}
+              src={thumb || ""}
               alt={attachment.meta.name}
               loading="lazy"
               className="h-full w-full object-cover object-top"
@@ -429,7 +464,8 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
         open={Boolean(docxPreview)}
         onClose={() => setDocxPreview(null)}
         name={docxPreview?.meta.name || ""}
-        pagesUrl={docxPreview?.meta.docxPagesUrl}
+        assetId={docxPreview ? docxAssetId(docxPreview.meta) : null}
+        pagesUrl={docxPreview ? docxPagesSource(docxPreview.meta) : null}
         markdownUrl={docxPreview ? previewSource(chatId, docxPreview) : null}
         downloadUrl={docxPreview ? downloadSource(chatId, docxPreview) : null}
         meta={docxPreview?.meta.size ? formatBytes(docxPreview.meta.size) : undefined}

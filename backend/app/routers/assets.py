@@ -70,6 +70,7 @@ async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:
     mime = file.content_type or _mime_for_path(Path(name))
     converted_from: str | None = None
     thumb_url: str | None = None
+    asset_id: str | None = None
     original_size = len(raw)
 
     if is_docx_attachment(name, mime, raw):
@@ -94,14 +95,15 @@ async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:
             encoding="utf-8",
         )
         # Word COM → PDF → PyMuPDF; при недоступности Word — Pillow-превью
-        # белого листа A4 с заголовком/строками/таблицами. Ошибка не ломает загрузку.
+        # белого листа A4 с заголовком/строками/таблицами. Ошибка не ломает загрузку:
+        # /assets/docx-thumb/{assetId} дорисует миниатюру при первом запросе.
         try:
             thumb_png = await run_in_threadpool(generate_docx_thumbnail, raw)
         except Exception:  # noqa: BLE001
             thumb_png = None
         if thumb_png:
             (ATTACHMENTS_DIR / f"{asset_id}.thumb.png").write_bytes(thumb_png)
-            thumb_url = f"/api/assets/docx-thumb/{asset_id}"
+        thumb_url = f"/api/assets/docx-thumb/{asset_id}"
         raw = markdown_bytes
         stem = name[: -len(Path(name).suffix)] if Path(name).suffix else name
         name = f"{stem}.md"
@@ -123,6 +125,12 @@ async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:
     if converted_from:
         result["convertedFrom"] = converted_from
         result["originalSize"] = original_size
+    if asset_id:
+        # фронтенд держит эти URL только в `_localAsset` (он вырезается при
+        # сохранении), поэтому страницы всегда можно запросить по assetId
+        result["assetId"] = asset_id
+        result["docxUrl"] = f"/api/assets/docx-file/{asset_id}"
+        result["docxPagesUrl"] = f"/api/assets/docx-pages/{asset_id}"
     if thumb_url:
         result["thumbUrl"] = thumb_url
     return result
@@ -265,6 +273,8 @@ def get_docx_page(asset_id: str, page: int) -> FileResponse:
             raise HTTPException(404, "Страница не найдена")
     return FileResponse(png, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
 
+
+@router.get("/assets/docx-file/{asset_id}")
 def get_docx_file(asset_id: str, download: bool = False) -> FileResponse:
     """Оригинальный .docx (в JSON чата хранится только извлечённый текст)."""
     if not DOCX_ASSET_RE.fullmatch(asset_id):

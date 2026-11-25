@@ -32,6 +32,8 @@ export interface LocalAsset {
   thumbUrl?: string | null;
   docxUrl?: string | null;
   docxPagesUrl?: string | null;
+  /** Источник вложения, если он был конвертирован (например, «docx»). */
+  convertedFrom?: string | null;
 }
 
 export interface AttachmentObject {
@@ -192,6 +194,10 @@ export interface UploadedAsset {
   thumbUrl?: string | null;
   convertedFrom?: string;
   originalSize?: number;
+  /** sha1 сайдкея в `data/attachments` (для `.docx`). */
+  assetId?: string | null;
+  docxUrl?: string | null;
+  docxPagesUrl?: string | null;
 }
 
 export interface ChatListResponse {

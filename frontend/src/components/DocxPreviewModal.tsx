@@ -10,6 +10,7 @@ import {
 import clsx from "clsx";
 import Modal from "./Modal";
 import MarkdownView from "./MarkdownView";
+import { docxPagesUrl } from "../lib/api";
 import { fetchText } from "../lib/clipboard";
 
 interface DocxPage {
@@ -30,6 +31,8 @@ interface DocxPreviewModalProps {
   onClose: () => void;
   name: string;
   meta?: string;
+  /** sha1 сайдкея в `data/attachments` — страницы резолвятся по нему. */
+  assetId?: string | null;
   pagesUrl?: string | null;
   markdownUrl?: string | null;
   downloadUrl?: string | null;
@@ -40,6 +43,7 @@ export default function DocxPreviewModal({
   onClose,
   name,
   meta,
+  assetId,
   pagesUrl,
   markdownUrl,
   downloadUrl,
@@ -53,6 +57,10 @@ export default function DocxPreviewModal({
   const [textLoading, setTextLoading] = useState(false);
   const [textError, setTextError] = useState<string | null>(null);
 
+  // assetId надёжнее, чем сохранённый URL: docxPagesUrl теряется при
+  // сериализации/чтении чата, а страницы всегда доступны по assetId.
+  const pagesEndpoint = assetId ? docxPagesUrl(assetId) : pagesUrl || null;
+
   useEffect(() => {
     if (!open) {
       setTab("pages");
@@ -64,11 +72,11 @@ export default function DocxPreviewModal({
       return;
     }
     let cancelled = false;
-    if (pagesUrl) {
+    if (pagesEndpoint) {
       setPagesLoading(true);
       setPagesError(null);
       setPages(null);
-      fetch(pagesUrl)
+      fetch(pagesEndpoint)
         .then(async (response) => {
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           return (await response.json()) as DocxPagesResponse;
@@ -105,7 +113,7 @@ export default function DocxPreviewModal({
     return () => {
       cancelled = true;
     };
-  }, [open, pagesUrl, markdownUrl]);
+  }, [open, pagesEndpoint, markdownUrl]);
 
   // Если страницы не отрендерились, автоматически показываем извлечённый текст.
   useEffect(() => {
@@ -190,6 +198,12 @@ export default function DocxPreviewModal({
               <div className="flex flex-col items-center gap-3 py-16 text-center">
                 <FileText size={26} className="text-ink-300" />
                 <div className="text-sm text-ink-200">Для этого документа нет страниц</div>
+                {!pagesEndpoint ? (
+                  <div className="max-w-xl text-xs text-ink-400">
+                    У вложения нет assetId исходного .docx в локальном хранилище — прикрепите
+                    документ заново, чтобы получить постраничный предпросмотр.
+                  </div>
+                ) : null}
               </div>
             )}
           </div>

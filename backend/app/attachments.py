@@ -146,23 +146,50 @@ def _auto_local_candidate(drive_id: str | None, slot: str) -> str | None:
     return None
 
 
+DOCX_ASSET_ID_RE = re.compile(r"[a-f0-9]{40}")
+
+
+def is_docx_asset_id(value: Any) -> bool:
+    """assetId сайдкея .docx — sha1 от base64 извлечённого Markdown."""
+    return bool(value) and bool(DOCX_ASSET_ID_RE.fullmatch(str(value)))
+
+
+def docx_assets_present(asset_id: str) -> bool:
+    """Есть ли для assetId хоть один артефакт в data/attachments."""
+    if not is_docx_asset_id(asset_id):
+        return False
+    folder = ATTACHMENTS_DIR
+    return any(
+        (folder / f"{asset_id}{suffix}").is_file()
+        for suffix in (".docx", ".thumb.png", ".pages.json", ".page0.png")
+    )
+
+
 def docx_sidecar(asset_id: str | None) -> dict[str, Any]:
-    """Сайдкей-информация о .docx в data/attachments (оригинал + миниатюра).
+    """Сайдкей-информация о .docx в data/attachments (оригинал + миниатюра + страницы).
 
     Сайдкей-файлы живут только на диске: в JSON чата GAS не пишется ничего
-    нестандартного — ``thumbUrl``/``docxUrl`` вычисляются на лету при
-    санитизации и вырезаются ``rehydrate_chat`` при сохранении.
+    нестандартного — ``thumbUrl``/``docxUrl``/``docxPagesUrl`` вычисляются на
+    лету при санитизации и вырезаются ``rehydrate_chat`` при сохранении.
+
+    ``docxPagesUrl`` отдаётся всегда, пока на диске есть хоть один артефакт:
+    страницы дорисовываются эндпоинтом по требованию, поэтому предпросмотр не
+    зависит от того, сохранился ли URL где-то в чате.
     """
-    if not asset_id or not re.fullmatch(r"[a-f0-9]{40}", asset_id):
+    if not is_docx_asset_id(asset_id):
         return {}
-    docx_path = ATTACHMENTS_DIR / f"{asset_id}.docx"
-    if not docx_path.is_file():
+    assert asset_id is not None
+    if not docx_assets_present(asset_id):
         return {}
     info: dict[str, Any] = {
-        "docxUrl": f"/api/assets/docx-file/{asset_id}",
-        "thumbUrl": f"/api/assets/docx-thumb/{asset_id}",
         "docxPagesUrl": f"/api/assets/docx-pages/{asset_id}",
+        "convertedFrom": "docx",
     }
+    docx_path = ATTACHMENTS_DIR / f"{asset_id}.docx"
+    if docx_path.is_file() or (ATTACHMENTS_DIR / f"{asset_id}.thumb.png").is_file():
+        info["thumbUrl"] = f"/api/assets/docx-thumb/{asset_id}"
+    if docx_path.is_file():
+        info["docxUrl"] = f"/api/assets/docx-file/{asset_id}"
     try:
         raw = json.loads((ATTACHMENTS_DIR / f"{asset_id}.meta.json").read_text(encoding="utf-8"))
         if isinstance(raw, dict) and raw.get("name"):
@@ -234,6 +261,10 @@ def attachment_meta(slot: str, obj: dict[str, Any], chunk_index: int) -> dict[st
         "youtubeId": drive_id if slot == "youtubeVideo" else None,
         "docxUrl": docx_info.get("docxUrl"),
         "thumbUrl": docx_info.get("thumbUrl"),
+        # страницы всегда резолвятся по assetId (id выше) — фронтенд не должен
+        # зависеть от того, дожил ли URL до следующей загрузки чата
+        "docxPagesUrl": docx_info.get("docxPagesUrl"),
+        "convertedFrom": docx_info.get("convertedFrom"),
     }
 
 
@@ -287,7 +318,13 @@ def _temp_path(temp_id: str) -> Path:
 def rehydrate_chat(
     incoming: dict[str, Any], original: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
-    """Restore inline base64 payloads and validate local paths."""
+    """Restore inline base64 payloads and validate local paths.
+
+    ``_localAsset`` вырезается у каждого вложения, поэтому служебные поля
+    сайдкея .docx (``docxUrl``/``thumbUrl``/``docxPagesUrl``/``convertedFrom``)
+    никогда не попадают в файл чата GAS: при следующем чтении их заново
+    считает ``docx_sidecar`` по ``sha1`` от base64-вложения.
+    """
     if not isinstance(incoming, dict):
         raise AttachmentError("Чат должен быть JSON-объектом")
     chat = copy.deepcopy(incoming)
