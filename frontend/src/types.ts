@@ -29,6 +29,8 @@ export interface LocalAsset {
   url?: string;
   tempId?: string | null;
   previewUrl?: string | null;
+  thumbUrl?: string | null;
+  docxUrl?: string | null;
 }
 
 export interface AttachmentObject {
@@ -186,6 +188,7 @@ export interface UploadedAsset {
   size: number;
   sizeLabel: string;
   previewUrl: string;
+  thumbUrl?: string | null;
   convertedFrom?: string;
   originalSize?: number;
 }

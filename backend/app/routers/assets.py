@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import io
+import json
 import mimetypes
 import os
 import re
@@ -28,8 +30,9 @@ from ..attachments import (
 )
 from ..config import ATTACHMENTS_DIR, CHAT_DIR, THUMB_DIR, UPLOAD_DIR
 from ..docx import docx_bytes_to_markdown
+from ..docx_preview import generate_docx_thumbnail
 from ..url_context import fetch_url_page, normalize_url
-from ..utils import human_size, natural_key
+from ..utils import human_size, natural_key, sha1_hex
 
 router = APIRouter(prefix="/api", tags=["assets"])
 
@@ -66,6 +69,7 @@ async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:
     name = "".join(char for char in name if ord(char) >= 32)[:200] or "file"
     mime = file.content_type or _mime_for_path(Path(name))
     converted_from: str | None = None
+    thumb_url: str | None = None
     original_size = len(raw)
 
     if is_docx_attachment(name, mime, raw):
@@ -77,9 +81,28 @@ async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:
             raise HTTPException(400, f"Не удалось прочитать документ .docx: {exc}") from exc
         if not markdown:
             raise HTTPException(400, "В документе .docx не найдено текста")
+        markdown_bytes = markdown.encode("utf-8")
+        # SHA-1 от base64 тех же байтов, что попадут в чат: тот же asset_id,
+        # который attachment_meta вычислит позже прямо из JSON чата. Так
+        # миниатюра находится без каких-либо нестандартных полей в GAS-JSON.
+        asset_id = sha1_hex(base64.b64encode(markdown_bytes).decode("ascii"))
         ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
         (ATTACHMENTS_DIR / f"{temp_id}.docx").write_bytes(raw)
-        raw = markdown.encode("utf-8")
+        (ATTACHMENTS_DIR / f"{asset_id}.docx").write_bytes(raw)
+        (ATTACHMENTS_DIR / f"{asset_id}.meta.json").write_text(
+            json.dumps({"name": name, "size": original_size}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        # Word COM → PDF → PyMuPDF; при недоступности Word — Pillow-превью
+        # белого листа A4 с заголовком/строками/таблицами. Ошибка не ломает загрузку.
+        try:
+            thumb_png = await run_in_threadpool(generate_docx_thumbnail, raw)
+        except Exception:  # noqa: BLE001
+            thumb_png = None
+        if thumb_png:
+            (ATTACHMENTS_DIR / f"{asset_id}.thumb.png").write_bytes(thumb_png)
+            thumb_url = f"/api/assets/docx-thumb/{asset_id}"
+        raw = markdown_bytes
         stem = name[: -len(Path(name).suffix)] if Path(name).suffix else name
         name = f"{stem}.md"
         mime = "text/markdown"
@@ -100,6 +123,8 @@ async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:
     if converted_from:
         result["convertedFrom"] = converted_from
         result["originalSize"] = original_size
+    if thumb_url:
+        result["thumbUrl"] = thumb_url
     return result
 
 
@@ -128,6 +153,54 @@ def get_upload(temp_id: str) -> FileResponse:
     if not path.is_file():
         raise HTTPException(404, "Файл не найден")
     return FileResponse(path, media_type=_mime_for_path(path), headers={"Cache-Control": "no-store"})
+
+
+DOCX_ASSET_RE = re.compile(r"[a-f0-9]{40}")
+
+
+@router.get("/assets/docx-thumb/{asset_id}")
+def get_docx_thumb(asset_id: str) -> FileResponse:
+    """PNG-миниатюра первой страницы .docx из data/attachments.
+
+    Генерируется один раз при первом запросе (Word COM → PDF → PyMuPDF,
+    fallback — Pillow), далее отдаётся кэш ``{assetId}.thumb.png``.
+    """
+    if not DOCX_ASSET_RE.fullmatch(asset_id):
+        raise HTTPException(404, "Миниатюра не найдена")
+    ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    thumb = ATTACHMENTS_DIR / f"{asset_id}.thumb.png"
+    if not thumb.is_file():
+        source = ATTACHMENTS_DIR / f"{asset_id}.docx"
+        if not source.is_file():
+            raise HTTPException(404, "Миниатюра не найдена")
+        png = generate_docx_thumbnail(source.read_bytes())
+        if not png:
+            raise HTTPException(415, "Не удалось построить миниатюру")
+        thumb.write_bytes(png)
+    return FileResponse(thumb, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.get("/assets/docx-file/{asset_id}")
+def get_docx_file(asset_id: str, download: bool = False) -> FileResponse:
+    """Оригинальный .docx (в JSON чата хранится только извлечённый текст)."""
+    if not DOCX_ASSET_RE.fullmatch(asset_id):
+        raise HTTPException(404, "Файл не найден")
+    path = ATTACHMENTS_DIR / f"{asset_id}.docx"
+    if not path.is_file():
+        raise HTTPException(404, "Файл не найден")
+    filename = path.name
+    try:
+        meta = json.loads((ATTACHMENTS_DIR / f"{asset_id}.meta.json").read_text(encoding="utf-8"))
+        if isinstance(meta, dict) and meta.get("name"):
+            filename = str(meta["name"])
+    except (OSError, json.JSONDecodeError):
+        pass
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=filename if download else None,
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @router.get("/assets/local")

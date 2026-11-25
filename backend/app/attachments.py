@@ -10,12 +10,13 @@ from __future__ import annotations
 import base64
 import binascii
 import copy
+import json
 import mimetypes
 import re
 from pathlib import Path
 from typing import Any
 
-from .config import CHAT_DIR, UPLOAD_DIR
+from .config import ATTACHMENTS_DIR, CHAT_DIR, UPLOAD_DIR
 from .utils import human_size, is_within, sha1_hex
 
 ATTACHMENT_SLOTS = (
@@ -145,6 +146,31 @@ def _auto_local_candidate(drive_id: str | None, slot: str) -> str | None:
     return None
 
 
+def docx_sidecar(asset_id: str | None) -> dict[str, Any]:
+    """Сайдкей-информация о .docx в data/attachments (оригинал + миниатюра).
+
+    Сайдкей-файлы живут только на диске: в JSON чата GAS не пишется ничего
+    нестандартного — ``thumbUrl``/``docxUrl`` вычисляются на лету при
+    санитизации и вырезаются ``rehydrate_chat`` при сохранении.
+    """
+    if not asset_id or not re.fullmatch(r"[a-f0-9]{40}", asset_id):
+        return {}
+    docx_path = ATTACHMENTS_DIR / f"{asset_id}.docx"
+    if not docx_path.is_file():
+        return {}
+    info: dict[str, Any] = {
+        "docxUrl": f"/api/assets/docx-file/{asset_id}",
+        "thumbUrl": f"/api/assets/docx-thumb/{asset_id}",
+    }
+    try:
+        raw = json.loads((ATTACHMENTS_DIR / f"{asset_id}.meta.json").read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and raw.get("name"):
+            info["docxName"] = str(raw["name"])
+    except (OSError, json.JSONDecodeError):
+        pass
+    return info
+
+
 def attachment_meta(slot: str, obj: dict[str, Any], chunk_index: int) -> dict[str, Any]:
     drive_id = str(obj.get("id") or "").strip() or None
     data = obj.get("data") if isinstance(obj.get("data"), str) else None
@@ -159,6 +185,9 @@ def attachment_meta(slot: str, obj: dict[str, Any], chunk_index: int) -> dict[st
             size = (CHAT_DIR / local_name).stat().st_size
         except OSError:
             size = 0
+
+    asset_id = sha1_hex(data) if data else None
+    docx_info = docx_sidecar(asset_id) if slot in INLINE_SLOTS else {}
 
     name = obj.get("displayName")
     if not name:
@@ -176,8 +205,10 @@ def attachment_meta(slot: str, obj: dict[str, Any], chunk_index: int) -> dict[st
             name = f"Изображение {chunk_index}"
         if slot in INLINE_SLOTS and mime:
             name += _ext_for_mime(mime)
+    if docx_info.get("docxName"):
+        # для .docx показываем оригинальное имя файла, а не сгенерированный .md
+        name = str(docx_info["docxName"])
 
-    asset_id = sha1_hex(data) if data else None
     external_url = None
     if slot in DRIVE_SLOTS and drive_id:
         external_url = f"https://drive.google.com/file/d/{drive_id}/view"
@@ -200,6 +231,8 @@ def attachment_meta(slot: str, obj: dict[str, Any], chunk_index: int) -> dict[st
         "resolved": bool(local_name or (slot in INLINE_SLOTS and data)),
         "externalUrl": external_url,
         "youtubeId": drive_id if slot == "youtubeVideo" else None,
+        "docxUrl": docx_info.get("docxUrl"),
+        "thumbUrl": docx_info.get("thumbUrl"),
     }
 
 

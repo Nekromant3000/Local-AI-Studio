@@ -5,7 +5,9 @@ import {
   FileText,
   Image as ImageIcon,
   Loader2,
+  Maximize2,
   Paperclip,
+  PenLine,
   Save,
   Send,
   Square,
@@ -15,6 +17,7 @@ import clsx from "clsx";
 import { api, extractErrorMessage } from "../lib/api";
 import { formatBytes } from "../lib/format";
 import { useLocalSettings, useAppStore } from "../store/useAppStore";
+import Modal from "./Modal";
 import type { PendingAttachment } from "../types";
 
 interface ComposerProps {
@@ -44,6 +47,7 @@ export default function Composer({ onOpenSettings }: ComposerProps) {
   const [uploading, setUploading] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const dragCounter = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -139,6 +143,7 @@ export default function Composer({ onOpenSettings }: ComposerProps) {
     setAttachments([]);
     setUploadError(null);
     setDraftText("");
+    setExpanded(false);
     void sendMessage(text, files, { generate });
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
@@ -199,6 +204,12 @@ export default function Composer({ onOpenSettings }: ComposerProps) {
                       alt={attachment.upload.name}
                       className="h-8 w-8 flex-none rounded object-cover"
                     />
+                  ) : attachment.upload.thumbUrl ? (
+                    <img
+                      src={attachment.upload.thumbUrl}
+                      alt={attachment.upload.name}
+                      className="h-8 w-8 flex-none rounded border border-white/15 bg-white object-cover object-top"
+                    />
                   ) : (
                     <div className="flex h-8 w-8 flex-none items-center justify-center rounded bg-black/25">
                       <FileText size={15} className="text-amber-300" />
@@ -237,31 +248,41 @@ export default function Composer({ onOpenSettings }: ComposerProps) {
             </div>
           ) : null}
 
-          <textarea
-            ref={textareaRef}
-            className="block max-h-[220px] min-h-[48px] w-full resize-none bg-transparent px-3.5 pb-1 pt-3 text-[13.5px] leading-relaxed text-ink-100 outline-none placeholder:text-ink-500"
-            placeholder={
-              generating
-                ? "Модель отвечает… дождитесь завершения или остановите генерацию"
-                : "Спросите модель…  Enter — отправить, Shift+Enter — новая строка"
-            }
-            value={draftText}
-            onChange={(event) => setDraftText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                if (canSend) submit(true);
+          <div className="relative">
+            <textarea
+              ref={textareaRef}
+              className="block max-h-[220px] min-h-[48px] w-full resize-none overflow-y-auto bg-transparent px-3.5 pb-1 pr-11 pt-3 text-[13.5px] leading-relaxed text-ink-100 outline-none placeholder:text-ink-500"
+              placeholder={
+                generating
+                  ? "Модель отвечает… дождитесь завершения или остановите генерацию"
+                  : "Спросите модель…  Enter — отправить, Shift+Enter — новая строка"
               }
-            }}
-            onPaste={(event) => {
-              const files = event.clipboardData?.files;
-              if (files?.length) {
-                event.preventDefault();
-                void addFiles(files);
-              }
-            }}
-            rows={1}
-          />
+              value={draftText}
+              onChange={(event) => setDraftText(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  if (canSend) submit(true);
+                }
+              }}
+              onPaste={(event) => {
+                const files = event.clipboardData?.files;
+                if (files?.length) {
+                  event.preventDefault();
+                  void addFiles(files);
+                }
+              }}
+              rows={1}
+            />
+            <button
+              type="button"
+              className="icon-btn absolute right-2 top-2.5 z-10 h-6 w-6"
+              onClick={() => setExpanded(true)}
+              title="Развернуть редактор промпта"
+            >
+              <Maximize2 size={12} />
+            </button>
+          </div>
 
           {uploadError ? (
             <div className="flex items-center gap-1.5 px-3.5 pb-1 text-[10.5px] text-rose-300">
@@ -377,6 +398,59 @@ export default function Composer({ onOpenSettings }: ComposerProps) {
           </span>
         </div>
       </div>
+
+      <Modal
+        open={expanded}
+        onClose={() => setExpanded(false)}
+        icon={<PenLine size={16} />}
+        title="Промпт"
+        subtitle="Удобное редактирование длинного текста · полностью синхронизирован с полем ввода"
+        size="full"
+        bodyClassName="p-4"
+        footer={
+          <>
+            <span className="mr-auto font-mono text-[11px] text-ink-400">
+              {draftText.length.toLocaleString("ru-RU")} символов
+              <span className="text-ink-600"> · Ctrl+Enter — отправить</span>
+            </span>
+            <button type="button" className="btn" onClick={() => setExpanded(false)}>
+              <X size={13} />
+              Готово
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => submit(true)}
+              disabled={!canSend}
+            >
+              <Send size={13} />
+              Отправить
+            </button>
+          </>
+        }
+      >
+        <textarea
+          autoFocus
+          className="field h-[calc(75vh-170px)] min-h-[300px] w-full resize-none text-[14px] leading-relaxed"
+          placeholder="Длинный промпт для модели…"
+          value={draftText}
+          onChange={(event) => setDraftText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+              event.preventDefault();
+              if (canSend) submit(true);
+            }
+          }}
+          onPaste={(event) => {
+            const files = event.clipboardData?.files;
+            if (files?.length) {
+              event.preventDefault();
+              void addFiles(files);
+            }
+          }}
+          spellCheck={false}
+        />
+      </Modal>
     </div>
   );
 }

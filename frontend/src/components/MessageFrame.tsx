@@ -211,6 +211,10 @@ export default function MessageFrame({ turn, chatId }: MessageFrameProps) {
           </div>
         ) : (
           <>
+            {/* Как в Google AI Studio: каждое вложение — отдельная карточка
+                в flex-wrap ряду над текстом сообщения. */}
+            <AttachmentGrid chatId={chatId} attachments={turn.attachments} />
+
             {mainChunk?.executableCode?.code ? (
               <CodeBlock
                 code={mainChunk.executableCode.code}
@@ -245,8 +249,6 @@ export default function MessageFrame({ turn, chatId }: MessageFrameProps) {
                 <span className="whitespace-pre-wrap">{mainChunk.errorMessage}</span>
               </div>
             ) : null}
-
-            <AttachmentGrid chatId={chatId} attachments={turn.attachments} />
 
             {isUser ? <UrlContextChips chatId={chatId} text={turn.text} /> : null}
 
