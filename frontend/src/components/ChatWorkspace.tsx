@@ -253,7 +253,8 @@ export default function ChatWorkspace() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const [showScroll, setShowScroll] = useState(false);
-  const [dragging, setDragging] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounter = useRef(0);
 
   const chunks = doc?.chat.chunkedPrompt?.chunks ?? [];
   const visibleChunks = streaming ? chunks.slice(0, streaming.cutoffIndex) : chunks;
@@ -291,6 +292,35 @@ export default function ChatWorkspace() {
     if (loadingDoc) stickRef.current = true;
   }, [loadingDoc]);
 
+  // Страховочные слушатели на window: они гарантированно гасят оверлей, даже
+  // если браузер не прислал dragleave (резкий уход за пределы окна) или файл
+  // отпущен вне зоны чата. Capture-фаза не даёт дочерним stopPropagation()
+  // блокировать сброс состояния оверлея.
+  useEffect(() => {
+    const resetDragState = () => {
+      dragCounter.current = 0;
+      setIsDragging(false);
+    };
+    const onWindowDrop = () => resetDragState();
+    const onWindowDragEnd = () => resetDragState();
+    const onWindowDragLeave = (event: DragEvent) => {
+      if (!event.relatedTarget) resetDragState();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") resetDragState();
+    };
+    window.addEventListener("drop", onWindowDrop, true);
+    window.addEventListener("dragend", onWindowDragEnd, true);
+    window.addEventListener("dragleave", onWindowDragLeave, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("drop", onWindowDrop, true);
+      window.removeEventListener("dragend", onWindowDragEnd, true);
+      window.removeEventListener("dragleave", onWindowDragLeave, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, []);
+
   const handleScroll = () => {
     const node = scrollRef.current;
     if (!node) return;
@@ -309,18 +339,25 @@ export default function ChatWorkspace() {
             ref={scrollRef}
             onScroll={handleScroll}
             className="h-full overflow-y-auto overscroll-contain"
+            onDragEnter={(event) => {
+              if (!event.dataTransfer?.types?.includes("Files")) return;
+              event.preventDefault();
+              dragCounter.current += 1;
+              setIsDragging(true);
+            }}
             onDragOver={(event) => {
               if (!event.dataTransfer?.types?.includes("Files")) return;
               event.preventDefault();
-              setDragging(true);
             }}
-            onDragLeave={(event) => {
-              if (event.currentTarget === event.target) setDragging(false);
+            onDragLeave={() => {
+              dragCounter.current = Math.max(0, dragCounter.current - 1);
+              if (dragCounter.current === 0) setIsDragging(false);
             }}
             onDrop={(event) => {
+              dragCounter.current = 0;
+              setIsDragging(false);
               if (!event.dataTransfer?.files?.length) return;
               event.preventDefault();
-              setDragging(false);
               queueFiles(event.dataTransfer.files);
             }}
           >
@@ -349,7 +386,7 @@ export default function ChatWorkspace() {
             )}
           </div>
 
-          {dragging ? (
+          {isDragging ? (
             <div className="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-accent-400/60 bg-[#0a1120]/85 text-[12px] text-accent-200 backdrop-blur-sm">
               Отпустите файлы, чтобы прикрепить к сообщению
             </div>

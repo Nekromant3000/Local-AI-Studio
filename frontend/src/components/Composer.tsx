@@ -43,7 +43,8 @@ export default function Composer({ onOpenSettings }: ComposerProps) {
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [uploading, setUploading] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounter = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -103,6 +104,34 @@ export default function Composer({ onOpenSettings }: ComposerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uploadQueue]);
 
+  // Страховочные слушатели на window (capture-фаза): гарантированно гасят
+  // подсказку о перетаскивании, даже если браузер не прислал dragleave или
+  // файл отпущен вне поля ввода / перетаскивание прервано (Esc, dragend).
+  useEffect(() => {
+    const resetDragState = () => {
+      dragCounter.current = 0;
+      setIsDragging(false);
+    };
+    const onWindowDrop = () => resetDragState();
+    const onWindowDragEnd = () => resetDragState();
+    const onWindowDragLeave = (event: DragEvent) => {
+      if (!event.relatedTarget) resetDragState();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") resetDragState();
+    };
+    window.addEventListener("drop", onWindowDrop, true);
+    window.addEventListener("dragend", onWindowDragEnd, true);
+    window.addEventListener("dragleave", onWindowDragLeave, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("drop", onWindowDrop, true);
+      window.removeEventListener("dragend", onWindowDragEnd, true);
+      window.removeEventListener("dragleave", onWindowDragLeave, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, []);
+
   const submit = (generate: boolean) => {
     const text = draftText;
     const files = attachments;
@@ -134,20 +163,26 @@ export default function Composer({ onOpenSettings }: ComposerProps) {
         <div
           className={clsx(
             "relative rounded-2xl border bg-[#0a1120]/95 shadow-[0_18px_60px_rgba(0,0,0,.4)] transition-all duration-150",
-            dragging
+            isDragging
               ? "border-accent-400/70 ring-2 ring-accent-500/20"
               : "border-white/[0.11] focus-within:border-accent-400/50 focus-within:ring-2 focus-within:ring-accent-500/10",
           )}
+          onDragEnter={(event) => {
+            if (!event.dataTransfer?.types?.includes("Files")) return;
+            dragCounter.current += 1;
+            setIsDragging(true);
+          }}
           onDragOver={(event) => {
             event.preventDefault();
-            setDragging(true);
           }}
-          onDragLeave={(event) => {
-            if (event.currentTarget === event.target) setDragging(false);
+          onDragLeave={() => {
+            dragCounter.current = Math.max(0, dragCounter.current - 1);
+            if (dragCounter.current === 0) setIsDragging(false);
           }}
           onDrop={(event) => {
             event.preventDefault();
-            setDragging(false);
+            dragCounter.current = 0;
+            setIsDragging(false);
             if (event.dataTransfer.files?.length) void addFiles(event.dataTransfer.files);
           }}
         >
@@ -328,7 +363,7 @@ export default function Composer({ onOpenSettings }: ComposerProps) {
             </div>
           </div>
 
-          {dragging ? (
+          {isDragging ? (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-2xl border-2 border-dashed border-accent-400/60 bg-[#0a1120]/85 text-[12px] text-accent-200 backdrop-blur-sm">
               Отпустите файлы, чтобы прикрепить
             </div>
