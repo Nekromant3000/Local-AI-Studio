@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from typing import Any
 from urllib.parse import urlparse
 
@@ -13,10 +16,12 @@ from .. import gas_store
 from ..attachments import get_attachment_bytes, is_docx_attachment, is_text_attachment
 from ..config import (
     CHAT_DIR,
+    ChatDirError,
     normalize_thinking_level,
     public_settings,
     load_settings,
     save_settings,
+    set_chat_dir,
 )
 from ..docx import docx_bytes_to_markdown
 from ..llm import MAX_TEXT_ATTACHMENT_CHARS
@@ -107,6 +112,81 @@ def update_settings(payload: SettingsUpdate) -> dict[str, Any]:
 
     saved = save_settings(current)
     return {"settings": public_settings(saved), "chatDir": str(CHAT_DIR)}
+
+
+_FOLDER_PICKER_SCRIPT = """
+import sys
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+except Exception as exc:
+    print("TKINTER_ERROR::" + str(exc))
+    raise SystemExit(2)
+root = tk.Tk()
+root.withdraw()
+root.attributes("-topmost", True)
+try:
+    path = filedialog.askdirectory(title="Выберите папку чатов Google AI Studio")
+finally:
+    root.destroy()
+print(path or "")
+"""
+
+
+def _open_native_folder_dialog() -> str:
+    """Нативное окно выбора папки (Windows shell через tkinter.filedialog)
+    запускается отдельным процессом python: модальный диалог не блокирует
+    event loop FastAPI, а сам subprocess выполняется в воркер-потоке.
+    Возвращает выбранный путь либо "" (пользователь отменил)."""
+    kwargs: dict[str, Any] = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": 600,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        result = subprocess.run([sys.executable, "-c", _FOLDER_PICKER_SCRIPT], **kwargs)
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(504, "Окно выбора папки не дождлось ответа (таймаут 10 минут)") from exc
+    except OSError as exc:
+        raise HTTPException(500, f"Не удалось открыть окно выбора папки: {exc}") from exc
+
+    stdout = (result.stdout or "").strip()
+    if result.returncode == 2 or "TKINTER_ERROR::" in stdout:
+        reason = stdout.split("TKINTER_ERROR::", 1)[1].strip() if "TKINTER_ERROR::" in stdout else ""
+        if not reason:
+            stderr_lines = [line for line in (result.stderr or "").splitlines() if line.strip()]
+            reason = stderr_lines[-1][:200] if stderr_lines else "tkinter недоступен"
+        raise HTTPException(501, f"Системное окно выбора папки недоступно: {reason[:200]}")
+    if result.returncode != 0:
+        stderr_lines = [line for line in (result.stderr or "").splitlines() if line.strip()]
+        reason = stderr_lines[-1][:200] if stderr_lines else "неизвестная ошибка"
+        raise HTTPException(500, f"Не удалось открыть окно выбора папки: {reason}")
+    return stdout
+
+
+@router.post("/system/select-chat-dir")
+async def select_chat_dir(path: str | None = None) -> dict[str, Any]:
+    """Открывает нативное системное окно выбора папки и переключает CHAT_DIR:
+    сохраняет путь в data/settings.json и возвращает новый путь.
+    Если ``path`` передан явно (программические сценарии, тесты), диалог
+    не открывается — используется он."""
+    folder = path.strip() if path and path.strip() else await run_in_threadpool(_open_native_folder_dialog)
+    if not folder:
+        return {"ok": False, "cancelled": True, "chatDir": str(CHAT_DIR)}
+    try:
+        resolved = await run_in_threadpool(set_chat_dir, folder)
+    except ChatDirError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "ok": True,
+        "cancelled": False,
+        "chatDir": str(resolved),
+        "chatDirExists": resolved.is_dir(),
+    }
 
 
 @router.post("/tokens/count")

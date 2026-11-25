@@ -12,7 +12,7 @@ import {
   X,
 } from "lucide-react";
 import clsx from "clsx";
-import { api } from "../lib/api";
+import { api, extractErrorMessage } from "../lib/api";
 import { formatBytes } from "../lib/format";
 import { useLocalSettings, useAppStore } from "../store/useAppStore";
 import type { PendingAttachment } from "../types";
@@ -36,6 +36,8 @@ export default function Composer({ onOpenSettings }: ComposerProps) {
   const generating = useAppStore((state) => state.generating);
   const activeId = useAppStore((state) => state.activeId);
   const tokenStats = useAppStore((state) => state.tokenStats);
+  const uploadQueue = useAppStore((state) => state.uploadQueue);
+  const clearUploadQueue = useAppStore((state) => state.clearUploadQueue);
   const settings = useLocalSettings();
 
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
@@ -84,12 +86,22 @@ export default function Composer({ onOpenSettings }: ComposerProps) {
           },
         ]);
       } catch (error) {
-        setUploadError(error instanceof Error ? error.message : String(error));
+        // extractErrorMessage разворачивает и FastAPI 422-массивы, и объекты
+        // detail — пользователь всегда видит читаемый текст, а не [object Object].
+        setUploadError(`«${file.name}»: ${extractErrorMessage(error)}`);
       } finally {
         setUploading((value) => Math.max(0, value - 1));
       }
     }
   };
+
+  useEffect(() => {
+    if (!uploadQueue.length) return;
+    const files = uploadQueue;
+    clearUploadQueue();
+    void addFiles(files);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploadQueue]);
 
   const submit = (generate: boolean) => {
     const text = draftText;

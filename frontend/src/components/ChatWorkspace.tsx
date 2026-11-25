@@ -248,10 +248,12 @@ export default function ChatWorkspace() {
   const generating = useAppStore((state) => state.generating);
   const streaming = useAppStore((state) => state.streaming);
   const isHistoryOpen = useAppStore((state) => state.isHistoryOpen);
+  const queueFiles = useAppStore((state) => state.queueFiles);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const [showScroll, setShowScroll] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
   const chunks = doc?.chat.chunkedPrompt?.chunks ?? [];
   const visibleChunks = streaming ? chunks.slice(0, streaming.cutoffIndex) : chunks;
@@ -307,6 +309,20 @@ export default function ChatWorkspace() {
             ref={scrollRef}
             onScroll={handleScroll}
             className="h-full overflow-y-auto overscroll-contain"
+            onDragOver={(event) => {
+              if (!event.dataTransfer?.types?.includes("Files")) return;
+              event.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={(event) => {
+              if (event.currentTarget === event.target) setDragging(false);
+            }}
+            onDrop={(event) => {
+              if (!event.dataTransfer?.files?.length) return;
+              event.preventDefault();
+              setDragging(false);
+              queueFiles(event.dataTransfer.files);
+            }}
           >
             {loadingDoc ? (
               <LoadingSkeleton />
@@ -332,6 +348,12 @@ export default function ChatWorkspace() {
               </div>
             )}
           </div>
+
+          {dragging ? (
+            <div className="pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-2xl border-2 border-dashed border-accent-400/60 bg-[#0a1120]/85 text-[12px] text-accent-200 backdrop-blur-sm">
+              Отпустите файлы, чтобы прикрепить к сообщению
+            </div>
+          ) : null}
 
           {showScroll ? (
             <button

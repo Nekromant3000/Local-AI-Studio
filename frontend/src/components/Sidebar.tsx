@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Brain,
   Clock,
+  FolderOpen,
   Loader2,
   MessageSquare,
   PanelLeftClose,
@@ -117,6 +118,7 @@ export default function Sidebar({ onClose, overlay }: SidebarProps) {
   const loadingChats = useAppStore((state) => state.loadingChats);
   const openChat = useAppStore((state) => state.openChat);
   const loadChats = useAppStore((state) => state.loadChats);
+  const selectChatDir = useAppStore((state) => state.selectChatDir);
   const createChat = useAppStore((state) => state.createChat);
   const deleteChat = useAppStore((state) => state.deleteChat);
   const setHistoryOpen = useAppStore((state) => state.setHistoryOpen);
@@ -127,6 +129,7 @@ export default function Sidebar({ onClose, overlay }: SidebarProps) {
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState<ChatSummary | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [picking, setPicking] = useState(false);
   const newInputRef = useRef<HTMLInputElement>(null);
 
   const filtered = useMemo(() => {
@@ -164,6 +167,16 @@ export default function Sidebar({ onClose, overlay }: SidebarProps) {
       await deleteChat(deleting.id);
     } finally {
       setDeleteBusy(false);
+    }
+  };
+
+  const handlePickDir = async () => {
+    if (picking) return;
+    setPicking(true);
+    try {
+      await selectChatDir();
+    } finally {
+      setPicking(false);
     }
   };
 
@@ -312,6 +325,16 @@ export default function Sidebar({ onClose, overlay }: SidebarProps) {
             {folder || "Папка не определена"}
           </span>
         </div>
+        <button
+          type="button"
+          className="btn btn-secondary w-full mt-1.5 !py-1.5 text-[10.5px]"
+          onClick={() => void handlePickDir()}
+          disabled={picking}
+          title="Выбрать папку с чатами Google AI Studio"
+        >
+          {picking ? <Loader2 size={12} className="animate-spin" /> : <FolderOpen size={12} />}
+          {picking ? 'Выбор папки…' : 'Выбрать папку'}
+        </button>
         <div className="mt-1 flex items-center justify-between text-[9px] text-ink-600">
           <span>Файлы GAS читаются и сохраняются напрямую</span>
           <button

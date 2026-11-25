@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import { api, ApiError, streamGenerate } from "../lib/api";
+import { api, ApiError, extractErrorMessage, streamGenerate } from "../lib/api";
 import {
   findLastUserIndex,
   isThought,
@@ -54,10 +54,14 @@ interface AppState {
   streaming: StreamingState | null;
   generating: boolean;
   draftText: string;
+  uploadQueue: File[];
   isHistoryOpen: boolean;
 
   bootstrap: () => Promise<void>;
   loadChats: (refresh?: boolean) => Promise<void>;
+  selectChatDir: () => Promise<void>;
+  queueFiles: (files: FileList | File[]) => void;
+  clearUploadQueue: () => void;
   openChat: (id: string) => Promise<void>;
   createChat: (title: string) => Promise<void>;
   renameActive: (title: string) => Promise<void>;
@@ -172,8 +176,9 @@ function upsertSummary(chats: ChatSummary[], summary: ChatSummary): ChatSummary[
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
-  if (error instanceof Error) return error.message;
-  return String(error);
+  // Любой другой объект/строку тоже разворачиваем в читаемый текст
+  // (в том числе FastAPI-овский detail в виде объекта или массива 422).
+  return extractErrorMessage(error);
 }
 
 function localSettingsFor(doc: ChatDocument | null, settings: AppSettings): LocalApiSettings {
@@ -259,6 +264,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   streaming: null,
   generating: false,
   draftText: "",
+  uploadQueue: [],
   isHistoryOpen: false,
 
   bootstrap: async () => {
@@ -297,6 +303,48 @@ export const useAppStore = create<AppState>()((set, get) => ({
       set({ error: errorMessage(error), loadingChats: false });
     }
   },
+
+  selectChatDir: async () => {
+    if (get().generating) get().stopGeneration();
+    try {
+      const response = await api.selectChatDir();
+      if (response.cancelled || !response.ok) return;
+      set({
+        chatDir: response.chatDir,
+        folder: response.chatDir,
+        chats: [],
+        activeId: null,
+        doc: null,
+        tokenStats: null,
+        urlContextItems: [],
+        draftText: "",
+        dirty: false,
+        saveState: "idle",
+        streaming: null,
+        uploadQueue: [],
+        error: null,
+        notice: `Папка чатов: ${response.chatDir}`,
+      });
+      localStorage.removeItem(LAST_CHAT_KEY);
+      await get().loadChats(true);
+      const first = get().chats[0];
+      if (first) await get().openChat(first.id);
+    } catch (error) {
+      set({ error: errorMessage(error) });
+    }
+  },
+
+  queueFiles: (files) => {
+    const list = Array.from(files);
+    if (!list.length) return;
+    if (!get().activeId) {
+      set({ error: "Сначала откройте чат, чтобы прикрепить файлы." });
+      return;
+    }
+    set((state) => ({ uploadQueue: [...state.uploadQueue, ...list] }));
+  },
+
+  clearUploadQueue: () => set({ uploadQueue: [] }),
 
   openChat: async (id) => {
     if (!get().generating && get().dirty) {

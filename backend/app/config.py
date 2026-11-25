@@ -21,7 +21,6 @@ DEFAULT_CHAT_DIR = Path(
 ).expanduser()
 
 DATA_DIR = Path(os.getenv("LOCAL_AI_STUDIO_DATA", str(BASE_DIR / "data"))).expanduser()
-CHAT_DIR = DEFAULT_CHAT_DIR.resolve()
 DATA_DIR = DATA_DIR.resolve()
 
 UPLOAD_DIR = DATA_DIR / "uploads"
@@ -32,6 +31,24 @@ URL_CACHE_DIR = DATA_DIR / "url_cache"
 CHAT_META_DIR = DATA_DIR / "chat_meta"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
+
+
+def _stored_chat_dir() -> str | None:
+    """Активная папка чатов из settings.json (выбор через UI), если задана."""
+    try:
+        if SETTINGS_FILE.is_file():
+            raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                stored = str(raw.get("chatDir") or "").strip()
+                if stored:
+                    return stored
+    except (OSError, json.JSONDecodeError):
+        return None
+    return None
+
+
+# Приоритет: выбор пользователя (settings.json) → GAS_CHAT_DIR → Documents\Google AI Studio.
+CHAT_DIR = Path(_stored_chat_dir() or DEFAULT_CHAT_DIR).expanduser().resolve()
 
 # Уровни мышления (Thinking Level) — наш внутренний канон.
 THINKING_LEVELS = ("NONE", "LOW", "MEDIUM", "HIGH", "EXTRA_HIGH")
@@ -87,6 +104,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "sendAttachments": True,
     "contextWindow": 131072,
     "urlContext": True,
+    "chatDir": str(DEFAULT_CHAT_DIR),
 }
 
 DEFAULT_CHAT_RUN_SETTINGS: dict[str, Any] = {
@@ -161,3 +179,51 @@ def chat_local_defaults(settings: dict[str, Any]) -> dict[str, Any]:
         "contextWindow": settings.get("contextWindow", 131072),
         "urlContext": bool(settings.get("urlContext", True)),
     }
+
+
+class ChatDirError(ValueError):
+    """Ошибка смены активной папки чатов."""
+
+
+def _rebind_chat_dir(new_dir: Path) -> None:
+    """Модули пакета делают ``from .config import CHAT_DIR`` и держат копию
+    ссылки; обновляем их модульные глобалы, чтобы смена папки действовала
+    сразу, без перезапуска сервера."""
+    import sys
+
+    package = __package__ or "app"
+    for name, module in list(sys.modules.items()):
+        if module is None:
+            continue
+        if name != package and not name.startswith(package + "."):
+            continue
+        if getattr(module, "CHAT_DIR", None) is not None:
+            module.CHAT_DIR = new_dir
+
+
+def set_chat_dir(path: str | Path) -> Path:
+    """Меняет активную папку чатов: валидация, ребинг CHAT_DIR во всех
+    модулях, сохранение в settings.json, сброс кэшей индексатора."""
+    raw_path = str(path or "").strip()
+    if not raw_path:
+        raise ChatDirError("Папка не выбрана")
+    candidate = Path(raw_path).expanduser()
+    try:
+        resolved = candidate.resolve()
+    except OSError as exc:
+        raise ChatDirError(f"Некорректный путь к папке: {exc}") from exc
+    if not resolved.is_dir():
+        raise ChatDirError(f"Папка не существует: {resolved}")
+
+    global CHAT_DIR
+    CHAT_DIR = resolved
+    _rebind_chat_dir(resolved)
+
+    settings = load_settings()
+    settings["chatDir"] = str(resolved)
+    save_settings(settings)
+
+    from .gas_store import invalidate_cache
+
+    invalidate_cache(full=True)
+    return resolved

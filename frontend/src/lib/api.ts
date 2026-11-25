@@ -23,15 +23,76 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * FastAPI может вернуть `detail` строкой, объектом ({"message": ...}) или
+ * массивом ошибок валидации 422 ([{"loc": [...], "msg": ...}]).
+ * Превращаем любой вариант в человекочитаемый текст, без "[object Object]".
+ */
+export function formatErrorDetail(detail: unknown): string {
+  if (detail === null || detail === undefined) return "";
+  if (typeof detail === "string") return detail;
+  if (typeof detail !== "object") return String(detail);
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object") {
+          const record = item as Record<string, unknown>;
+          const message =
+            typeof record.msg === "string"
+              ? record.msg
+              : typeof record.message === "string"
+                ? record.message
+                : "";
+          if (!message) return "";
+          const location = Array.isArray(record.loc)
+            ? record.loc.filter((part) => part !== "body").join(".")
+            : "";
+          return location ? `${location}: ${message}` : message;
+        }
+        return "";
+      })
+      .filter(Boolean);
+    return parts.length ? parts.join("; ") : safeStringify(detail);
+  }
+  const record = detail as Record<string, unknown>;
+  for (const key of ["message", "error", "detail"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return safeStringify(detail);
+}
+
+/** Извлекает читаемое сообщение из ошибки любой формы (Error, Response-JSON, строка). */
+export function extractErrorMessage(error: unknown): string {
+  if (error instanceof ApiError || error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    if ("detail" in record) {
+      const detail = formatErrorDetail(record.detail);
+      if (detail) return detail;
+    }
+    if (typeof record.message === "string" && record.message.trim()) return record.message;
+    return safeStringify(error);
+  }
+  return String(error);
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
       ...init,
-      headers: {
-        ...(init?.body ? { "Content-Type": "application/json" } : {}),
-        ...(init?.headers || {}),
-      },
+      headers: requestHeaders(init),
     });
   } catch (error) {
     throw new ApiError(
@@ -50,13 +111,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     let detail = "";
     if (payload && typeof payload === "object" && "detail" in payload) {
-      detail = String((payload as { detail?: unknown }).detail ?? "");
+      detail = formatErrorDetail((payload as { detail?: unknown }).detail);
     } else if (typeof payload === "string") {
       detail = payload;
     }
     throw new ApiError(detail || `HTTP ${response.status}`, response.status);
   }
   return payload as T;
+}
+
+/**
+ * Заголовок Content-Type важен: для FormData его выставить нельзя, иначе
+ * браузер не добавит multipart boundary, и FastAPI вернёт 422
+ * «Field required» вместо загрузки файла.
+ */
+function requestHeaders(init?: RequestInit): Record<string, string> {
+  const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
+  const hasContentType = Object.keys(headers).some((key) => key.toLowerCase() === "content-type");
+  if (init?.body && !(init.body instanceof FormData) && !hasContentType) {
+    headers["Content-Type"] = "application/json";
+  }
+  return headers;
 }
 
 export const api = {
@@ -101,6 +176,15 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(payload),
     });
+  },
+
+  selectChatDir(): Promise<{
+    ok: boolean;
+    cancelled?: boolean;
+    chatDir: string;
+    chatDirExists?: boolean;
+  }> {
+    return request(`/system/select-chat-dir`, { method: "POST" });
   },
 
   getModels(baseUrl: string, apiKey?: string): Promise<{ models: ModelInfo[]; baseUrl: string }> {
@@ -232,7 +316,9 @@ export async function streamGenerate(
     let detail = `HTTP ${response.status}`;
     try {
       const parsed = JSON.parse(text);
-      detail = String(parsed.detail || detail);
+      detail =
+        formatErrorDetail(parsed && typeof parsed === "object" ? parsed.detail ?? parsed : parsed) ||
+        detail;
     } catch {
       if (text) detail = text.slice(0, 500);
     }

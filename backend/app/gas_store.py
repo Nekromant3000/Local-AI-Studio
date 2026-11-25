@@ -196,10 +196,14 @@ def _scan_chats() -> list[dict[str, Any]]:
     return results
 
 
-def invalidate_cache() -> None:
+def invalidate_cache(*, full: bool = False) -> None:
+    """Сбрасывает кэш списка чатов; ``full=True`` — также кэш метаданных
+    (нужно при смене активной папки чатов)."""
     global _list_cache
     with _cache_lock:
         _list_cache = None
+        if full:
+            _meta_cache.clear()
 
 
 def list_chats(query: str | None = None, *, force: bool = False) -> list[dict[str, Any]]:
