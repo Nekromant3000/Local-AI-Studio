@@ -16,7 +16,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CHAT_DIR = Path(
     os.getenv(
         "GAS_CHAT_DIR",
-        r"C:\Users\Nekromant\Documents\Google AI Studio",
+        str(Path.home() / "Documents" / "Google AI Studio"),
     )
 ).expanduser()
 

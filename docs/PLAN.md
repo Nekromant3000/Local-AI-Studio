@@ -9,7 +9,7 @@
 
 Локальный рабочий стол, полностью совместимый с форматом Google AI Studio (GAS):
 приложение читает и **редактирует на месте** JSON-чаты из папки
-`C:\Users\Nekromant\Documents\Google AI Studio` (переопределяется переменной
+`%USERPROFILE%\Documents\Google AI Studio` (переопределяется переменной
 `GAS_CHAT_DIR`), а генерацию выполняет через любой **OpenAI-совместимый
 локальный API** (LM Studio, Ollama, llama.cpp, Strata и т. п.).
 
