@@ -18,6 +18,7 @@ import { formatBytes } from "../lib/format";
 import { useAppStore } from "../store/useAppStore";
 import AttachmentPicker from "./AttachmentPicker";
 import ConfirmDialog from "./ConfirmDialog";
+import DocxPreviewModal from "./DocxPreviewModal";
 import PreviewModal from "./PreviewModal";
 
 type Attachment = DisplayTurn["attachments"][number];
@@ -60,6 +61,16 @@ function bindKind(slot: LocalAsset["slot"]): "image" | "document" | "video" {
   return "document";
 }
 
+/** Компактный бейдж формата (расширение файла или MIME-подтип). */
+function formatBadge(meta: LocalAsset): string {
+  const dot = meta.name.lastIndexOf(".");
+  if (dot > 0 && dot < meta.name.length - 1) {
+    return meta.name.slice(dot + 1).slice(0, 4).toUpperCase();
+  }
+  const sub = meta.mimeType.split("/")[1] || "";
+  return (sub || meta.kind).slice(0, 4).toUpperCase();
+}
+
 function FileIcon({ meta }: { meta: LocalAsset }) {
   if (meta.slot === "youtubeVideo") return <Youtube size={18} className="text-rose-300" />;
   if (meta.kind === "video") return <Film size={18} className="text-sky-300" />;
@@ -82,6 +93,7 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
   const bindAttachment = useAppStore((state) => state.bindAttachment);
   const [broken, setBroken] = useState<Record<string, boolean>>({});
   const [preview, setPreview] = useState<Attachment | null>(null);
+  const [docxPreview, setDocxPreview] = useState<Attachment | null>(null);
   const [binding, setBinding] = useState<Attachment | null>(null);
   const [deleting, setDeleting] = useState<Attachment | null>(null);
 
@@ -93,6 +105,10 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
 
   const openPreview = (attachment: Attachment) => {
     setPreview(attachment);
+  };
+
+  const openDocxPreview = (attachment: Attachment) => {
+    setDocxPreview(attachment);
   };
 
   const openExternal = (attachment: Attachment) => {
@@ -119,7 +135,8 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
   const previewUrl = preview ? previewSource(chatId, preview) : null;
   const previewDownload = preview ? downloadSource(chatId, preview) : null;
 
-  // Каждая карточка — самостоятельный блок: никаких общих рамок на группу.
+  // Каждое вложение — отдельный самостоятельный блок-фрейм. Никакого
+  // горизонтального ряда/скролла: строго вертикальный столбик.
   const renderImageCard = (attachment: Attachment) => {
     const key = `${attachment.index}:${attachment.slot}`;
     const src = previewSource(chatId, attachment);
@@ -127,11 +144,11 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
     return (
       <div
         key={key}
-        className="group relative w-[170px] overflow-hidden rounded-xl border border-white/[0.09] bg-[#080d18] transition-colors hover:border-white/[0.16]"
+        className="group w-[540px] max-w-full overflow-hidden rounded-2xl border border-white/[0.09] bg-[#080d18] transition-colors hover:border-white/[0.16]"
       >
         <button
           type="button"
-          className="relative block aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-[#141d33] via-[#0d1527] to-[#080d18]"
+          className="relative block w-full bg-gradient-to-br from-[#141d33] via-[#0d1527] to-[#080d18]"
           onClick={() => (showImage ? openPreview(attachment) : setBinding(attachment))}
           title={showImage ? "Открыть предпросмотр" : "Привязать локальный файл"}
         >
@@ -140,36 +157,39 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
               src={src || ""}
               alt={attachment.meta.name}
               loading="lazy"
-              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+              className="block max-h-[560px] w-full object-contain"
               onError={() => markBroken(key)}
             />
           ) : (
-            <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04]">
+            <div className="flex min-h-[220px] flex-col items-center justify-center gap-2 px-4 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04]">
                 {attachment.meta.slot === "driveImage" ? (
-                  <HardDrive size={19} className="text-ink-300" />
+                  <HardDrive size={26} className="text-ink-300" />
                 ) : (
-                  <ImageIcon size={19} className="text-ink-300" />
+                  <ImageIcon size={26} className="text-ink-300" />
                 )}
               </div>
-              <div className="text-[11px] text-ink-300">
+              <div className="text-[12px] text-ink-300">
                 {attachment.meta.driveId
-                  ? `Drive · ${attachment.meta.driveId.slice(0, 10)}…`
+                  ? `Drive · ${attachment.meta.driveId.slice(0, 12)}…`
                   : "Нет локальной копии"}
               </div>
-              <div className="text-[10px] text-accent-300">Привязать файл</div>
+              <div className="text-[11px] text-accent-300">Привязать файл</div>
             </div>
           )}
-          <span className="absolute left-1.5 top-1.5 rounded-md border border-white/10 bg-black/60 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-ink-200 backdrop-blur">
+          <span className="absolute left-2 top-2 rounded-md border border-white/10 bg-black/60 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-200 backdrop-blur">
             {slotBadge(attachment.meta)}
           </span>
         </button>
-        <div className="flex items-center gap-1.5 border-t border-white/[0.06] px-2 py-1.5">
+        <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.06] px-3 py-2">
+          <span className="flex-none rounded-md border border-white/10 bg-white/[0.05] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-ink-200">
+            {formatBadge(attachment.meta)}
+          </span>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[11px] text-ink-200" title={attachment.meta.name}>
+            <div className="break-words text-[12.5px] text-ink-100" title={attachment.meta.name}>
               {attachment.meta.name}
             </div>
-            <div className="truncate text-[9.5px] text-ink-400">
+            <div className="text-[10.5px] text-ink-400">
               {attachment.meta.size
                 ? formatBytes(attachment.meta.size)
                 : attachment.meta.mimeType}
@@ -183,7 +203,7 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
                 onClick={() => openPreview(attachment)}
                 title="Предпросмотр"
               >
-                <Eye size={13} />
+                <Eye size={14} />
               </button>
             ) : null}
             {canBind(attachment.meta) ? (
@@ -193,7 +213,7 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
                 onClick={() => setBinding(attachment)}
                 title="Привязать локальный файл"
               >
-                <Link2 size={13} />
+                <Link2 size={14} />
               </button>
             ) : null}
             {src ? (
@@ -203,7 +223,7 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
                 download={attachment.meta.name}
                 title="Скачать"
               >
-                <Download size={13} />
+                <Download size={14} />
               </a>
             ) : null}
             <button
@@ -212,7 +232,7 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
               onClick={() => setDeleting(attachment)}
               title="Удалить вложение"
             >
-              <Trash2 size={13} />
+              <Trash2 size={14} />
             </button>
           </div>
         </div>
@@ -220,21 +240,20 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
     );
   };
 
-  // .docx: отдельная карточка с миниатюрой первой страницы (A4), бейджем DOCX и именем.
+  // .docx: крупный лист A4 с миниатюрой первой страницы, реальным именем и кнопками.
   const renderDocxCard = (attachment: Attachment) => {
     const key = `${attachment.index}:${attachment.slot}`;
-    const src = previewSource(chatId, attachment);
     const showThumb = Boolean(attachment.meta.thumbUrl) && !broken[key];
     return (
       <div
         key={key}
-        className="group relative w-[150px] overflow-hidden rounded-xl border border-white/[0.09] bg-white/[0.03] transition-colors hover:border-white/[0.16]"
+        className="group w-[360px] max-w-full overflow-hidden rounded-2xl border border-white/[0.09] bg-white/[0.03] transition-colors hover:border-white/[0.16]"
       >
         <button
           type="button"
           className="relative block aspect-[210/297] w-full overflow-hidden bg-white"
-          onClick={() => openPreview(attachment)}
-          title="Предпросмотр текста документа"
+          onClick={() => openDocxPreview(attachment)}
+          title="Открыть предпросмотр страниц документа"
         >
           {showThumb ? (
             <img
@@ -246,43 +265,44 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
             />
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center">
-              <div className="flex h-11 w-11 items-center justify-center rounded-xl border border-[#2b579a]/25 bg-[#2b579a]/10">
-                <FileText size={21} className="text-[#7ea1d4]" />
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-[#2b579a]/25 bg-[#2b579a]/10">
+                <FileText size={28} className="text-[#7ea1d4]" />
               </div>
-              <div className="text-[10px] text-ink-400">Нет миниатюры</div>
+              <div className="text-[11px] text-ink-400">Нет миниатюры</div>
             </div>
           )}
-          <span className="absolute left-1.5 top-1.5 rounded-md bg-[#2b579a] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-white shadow-sm">
+          <span className="absolute left-2 top-2 rounded-md bg-[#2b579a] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white shadow-sm">
             DOCX
           </span>
         </button>
-        <div className="flex items-center gap-1.5 border-t border-white/[0.06] px-2 py-1.5">
+        <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.06] px-3 py-2">
+          <span className="flex-none rounded-md bg-[#2b579a] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-white">
+            DOCX
+          </span>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[11px] text-ink-200" title={attachment.meta.name}>
+            <div className="break-words text-[12.5px] text-ink-100" title={attachment.meta.name}>
               {attachment.meta.name}
             </div>
-            <div className="truncate text-[9.5px] text-ink-400">
-              {attachment.meta.size ? formatBytes(attachment.meta.size) : "document"}
+            <div className="text-[10.5px] text-ink-400">
+              {attachment.meta.size ? formatBytes(attachment.meta.size) : "документ"}
             </div>
           </div>
           <div className="flex flex-none items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-            {src ? (
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={() => openPreview(attachment)}
-                title="Предпросмотр"
-              >
-                <Eye size={13} />
-              </button>
-            ) : null}
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => openDocxPreview(attachment)}
+              title="Предпросмотр страниц"
+            >
+              <Eye size={14} />
+            </button>
             <a
               className="icon-btn"
               href={downloadSource(chatId, attachment) || undefined}
               download={attachment.meta.name}
               title="Скачать .docx"
             >
-              <Download size={13} />
+              <Download size={14} />
             </a>
             <button
               type="button"
@@ -290,7 +310,7 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
               onClick={() => setDeleting(attachment)}
               title="Удалить вложение"
             >
-              <Trash2 size={13} />
+              <Trash2 size={14} />
             </button>
           </div>
         </div>
@@ -305,9 +325,9 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
     return (
       <div
         key={key}
-        className="group flex w-[250px] items-center gap-2.5 rounded-xl border border-white/[0.08] bg-white/[0.022] px-2.5 py-2 transition-colors hover:border-white/[0.14] hover:bg-white/[0.035]"
+        className="group flex w-[420px] max-w-full items-center gap-3 rounded-2xl border border-white/[0.08] bg-white/[0.022] px-3 py-2.5 transition-colors hover:border-white/[0.14] hover:bg-white/[0.035]"
       >
-        <div className="flex h-9 w-9 flex-none items-center justify-center rounded-lg border border-white/10 bg-black/25">
+        <div className="flex h-11 w-11 flex-none items-center justify-center rounded-xl border border-white/10 bg-black/25">
           <FileIcon meta={attachment.meta} />
         </div>
         <button
@@ -316,10 +336,10 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
           onClick={() => (src ? openPreview(attachment) : external && openExternal(attachment))}
           disabled={!src && !external}
         >
-          <div className="truncate text-[12px] text-ink-100" title={attachment.meta.name}>
+          <div className="break-words text-[13px] text-ink-100" title={attachment.meta.name}>
             {attachment.meta.name}
           </div>
-          <div className="flex items-center gap-1.5 text-[10px] text-ink-400">
+          <div className="flex flex-wrap items-center gap-1.5 text-[10.5px] text-ink-400">
             <span>{attachment.meta.mimeType || attachment.meta.kind}</span>
             {attachment.meta.size ? <span>· {formatBytes(attachment.meta.size)}</span> : null}
             {attachment.meta.slot === "youtubeVideo" ? (
@@ -386,7 +406,7 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
   };
 
   return (
-    <div className={compact ? "mt-2 flex flex-wrap items-stretch gap-2" : "mt-3.5 flex flex-wrap items-stretch gap-2"}>
+    <div className={compact ? "mt-2 flex flex-col items-start gap-3" : "mt-3.5 flex flex-col items-start gap-3"}>
       {attachments.map((attachment) => {
         if (attachment.meta.kind === "image") return renderImageCard(attachment);
         if (isDocxBacked(attachment.meta)) return renderDocxCard(attachment);
@@ -403,6 +423,16 @@ export default function AttachmentGrid({ chatId, attachments, compact }: Attachm
         downloadUrl={previewDownload}
         externalUrl={preview?.meta.externalUrl}
         meta={preview?.meta.size ? formatBytes(preview.meta.size) : undefined}
+      />
+
+      <DocxPreviewModal
+        open={Boolean(docxPreview)}
+        onClose={() => setDocxPreview(null)}
+        name={docxPreview?.meta.name || ""}
+        pagesUrl={docxPreview?.meta.docxPagesUrl}
+        markdownUrl={docxPreview ? previewSource(chatId, docxPreview) : null}
+        downloadUrl={docxPreview ? downloadSource(chatId, docxPreview) : null}
+        meta={docxPreview?.meta.size ? formatBytes(docxPreview.meta.size) : undefined}
       />
 
       <AttachmentPicker

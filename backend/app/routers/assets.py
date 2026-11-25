@@ -30,7 +30,7 @@ from ..attachments import (
 )
 from ..config import ATTACHMENTS_DIR, CHAT_DIR, THUMB_DIR, UPLOAD_DIR
 from ..docx import docx_bytes_to_markdown
-from ..docx_preview import generate_docx_thumbnail
+from ..docx_preview import generate_docx_pages, generate_docx_thumbnail
 from ..url_context import fetch_url_page, normalize_url
 from ..utils import human_size, natural_key, sha1_hex
 
@@ -180,7 +180,91 @@ def get_docx_thumb(asset_id: str) -> FileResponse:
     return FileResponse(thumb, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
 
 
-@router.get("/assets/docx-file/{asset_id}")
+def _render_and_cache_pages(asset_id: str) -> tuple[int, str]:
+    """Рендер + кэш всех страниц .docx в data/attachments.
+
+    Пишет ``{assetId}.page{N}.png`` (N с 0) и манифест ``{assetId}.pages.json``
+    с числом страниц и источником (``word`` — Word COM + PyMuPDF, ``pillow`` —
+    фолбэк по содержимому). Возвращает ``(количество_страниц, источник)``.
+    """
+    source = ATTACHMENTS_DIR / f"{asset_id}.docx"
+    if not source.is_file():
+        raise HTTPException(404, "Документ не найден")
+    pages = generate_docx_pages(source.read_bytes())
+    if not pages:
+        raise HTTPException(415, "Не удалось построить предпросмотр страниц")
+    for index, png in enumerate(pages):
+        (ATTACHMENTS_DIR / f"{asset_id}.page{index}.png").write_bytes(png)
+    origin = "pillow" if len(pages) == 1 else "word"
+    (ATTACHMENTS_DIR / f"{asset_id}.pages.json").write_text(
+        json.dumps({"count": len(pages), "source": origin}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return len(pages), origin
+
+
+def _pages_manifest(asset_id: str) -> tuple[int, str] | None:
+    """Читает кэш-манифест страниц; ``None`` если часть PNG отсутствует."""
+    manifest = ATTACHMENTS_DIR / f"{asset_id}.pages.json"
+    if not manifest.is_file():
+        return None
+    try:
+        raw = json.loads(manifest.read_text(encoding="utf-8"))
+        count = int(raw.get("count") or 0)
+        origin = str(raw.get("source") or "word")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if count <= 0:
+        return None
+    for index in range(count):
+        if not (ATTACHMENTS_DIR / f"{asset_id}.page{index}.png").is_file():
+            return None
+    return count, origin
+
+
+@router.get("/assets/docx-pages/{asset_id}")
+def get_docx_pages(asset_id: str) -> dict[str, Any]:
+    """Список полноэкранных PNG-страниц .docx (~1100px, до 15 страниц).
+
+    Генерируется один раз при первом запросе (Word COM → PDF → PyMuPDF,
+    фолбэк — Pillow), далее страницы и манифест отдаются из кэша.
+    """
+    if not DOCX_ASSET_RE.fullmatch(asset_id):
+        raise HTTPException(404, "Документ не найден")
+    ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    cached = _pages_manifest(asset_id)
+    if cached:
+        count, origin = cached
+    else:
+        count, origin = _render_and_cache_pages(asset_id)
+    return {
+        "assetId": asset_id,
+        "count": count,
+        "source": origin,
+        "pages": [
+            {
+                "index": index,
+                "url": f"/api/assets/docx-page/{asset_id}/{index}",
+            }
+            for index in range(count)
+        ],
+    }
+
+
+@router.get("/assets/docx-page/{asset_id}/{page}")
+def get_docx_page(asset_id: str, page: int) -> FileResponse:
+    """Отдельная PNG-страница предпросмотра .docx из кэша."""
+    if not DOCX_ASSET_RE.fullmatch(asset_id) or page < 0:
+        raise HTTPException(404, "Страница не найдена")
+    png = ATTACHMENTS_DIR / f"{asset_id}.page{page}.png"
+    if not png.is_file():
+        # страницы ещё не рендерились — рендерим по запросу
+        if _pages_manifest(asset_id) is None:
+            _render_and_cache_pages(asset_id)
+        if not png.is_file():
+            raise HTTPException(404, "Страница не найдена")
+    return FileResponse(png, media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
+
 def get_docx_file(asset_id: str, download: bool = False) -> FileResponse:
     """Оригинальный .docx (в JSON чата хранится только извлечённый текст)."""
     if not DOCX_ASSET_RE.fullmatch(asset_id):

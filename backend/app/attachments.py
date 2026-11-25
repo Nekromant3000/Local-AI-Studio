@@ -161,6 +161,7 @@ def docx_sidecar(asset_id: str | None) -> dict[str, Any]:
     info: dict[str, Any] = {
         "docxUrl": f"/api/assets/docx-file/{asset_id}",
         "thumbUrl": f"/api/assets/docx-thumb/{asset_id}",
+        "docxPagesUrl": f"/api/assets/docx-pages/{asset_id}",
     }
     try:
         raw = json.loads((ATTACHMENTS_DIR / f"{asset_id}.meta.json").read_text(encoding="utf-8"))

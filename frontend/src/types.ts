@@ -31,6 +31,7 @@ export interface LocalAsset {
   previewUrl?: string | null;
   thumbUrl?: string | null;
   docxUrl?: string | null;
+  docxPagesUrl?: string | null;
 }
 
 export interface AttachmentObject {
