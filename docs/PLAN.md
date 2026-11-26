@@ -1,6 +1,6 @@
 # Local AI Studio — актуальная архитектура, статус и план
 
-Обновлено: 2026-11-25. Документ описывает **реальное состояние кодовой базы**
+Обновлено: 2026-11-26. Документ описывает **реальное состояние кодовой базы**
 (`backend/`, `frontend/src/`), а не первоначальный MVP-замысел.
 
 ---
@@ -25,7 +25,10 @@
 Node.js портативный — в `.tools\node` (для `npm.cmd` нужен `node` в `PATH`).
 Зависимости бэкенда — `backend\.venv` (`pip install -r requirements.txt`; `PyMuPDF` и
 `pywin32` нужны для миниатюр `.docx`, `pywin32` работает только на Windows и требует
-установленного MS Word для «настоящего» рендера первой страницы).
+установленного MS Word для «настоящего» рендера первой страницы; `yt-dlp`,
+`youtube-transcript-api` и `faster-whisper` — для парсера YouTube/Shorts,
+веса Whisper `large-v3-turbo` качаются с Hugging Face в кэш HF при первом
+использовании).
 Env-переменные: `LOCAL_AI_STUDIO_HOST/PORT/RELOAD`, `GAS_CHAT_DIR`,
 `LOCAL_AI_STUDIO_DATA`. Swagger: `/api/docs`.
 
@@ -39,17 +42,19 @@ Env-переменные: `LOCAL_AI_STUDIO_HOST/PORT/RELOAD`, `GAS_CHAT_DIR`,
 | `app/config.py` | пути (`CHAT_DIR`, `DATA_DIR`, uploads/backups/thumbnails, `settings.json`), `DEFAULT_SETTINGS` (в т. ч. `chatDir` — активная папка чатов, приоритет: `settings.json` → `GAS_CHAT_DIR` → Documents), `DEFAULT_CHAT_RUN_SETTINGS` (в т. ч. `thinkingLevel`), константы уровней мышления (`THINKING_LEVELS`, маппинги в `reasoning_effort` и GAS `thinkingLevel`, `normalize_thinking_level`), `set_chat_dir`/`ChatDirError` (смена папки в рантайме: валидация, ребинг `CHAT_DIR` во всех модулях пакета, сохранение, сброс кэшей), атомарное сохранение настроек |
 | `app/gas_store.py` | индекс папки GAS (mtime-кэш, `invalidate_cache(full=True)` при смене папки), `get_document/create_chat/save_document/rename_chat/delete_chat` (в `data/trash`), бэкапы перед записью, `estimate_chat_tokens`, `default_chat` |
 | `app/attachments.py` | разбор `driveImage/inlineImage/driveDocument/youtubeVideo/...`, санитизация чата перед отправкой в браузер (inline base64 → lazy-endpoint), «обезвреживание» и реконструкция (`rehydrate_chat`) при сохранении, привязка Drive-объектов к локальным файлам, Temp-файлы загрузок, `docx_sidecar` — сайдкей-файлы `.docx` (оригинал + миниатюра + страницы) находятся по SHA-1 контента и дают `docxUrl`/`thumbUrl`/`docxPagesUrl`/исходное имя **без записи новых полей в GAS-JSON** |
-| `app/llm.py` | OpenAI-совместимый стриминг: `list_models`, `build_messages` (чаты GAS → messages с картинками/файлами + depth-prompting блок `<system_reminder>`), `ThinkTagFilter` (перехват `<think>` в reasoning-канал), поддержка `reasoning_content`, `reasoning_effort` по уровню мышления, подготовка усечения контекста, генерация GAS-чанков ответа (`make_generated_chunks`, `thinkingBudget: -1`) |
-| `app/tokens.py` | tiktoken с кэшем и graceful fallback на эвристику; `count_request` учитывает текст вложений (`attachmentText`) и URL-контекст (`urls`, `urlItems`) |
+| `app/llm.py` | OpenAI-совместимый стриминг: `list_models`, `build_messages` (чаты GAS → messages с картинками/файлами + depth-prompting блок `<system_reminder>`;runtime-инъекция URL-контекста и **кэшированных YouTube-транскриптов** в последнее user-сообщение через `append_to_last_user`), `ThinkTagFilter` (перехват `<think>` в reasoning-канал), поддержка `reasoning_content`, `reasoning_effort` по уровню мышления, подготовка усечения контекста, генерация GAS-чанков ответа (`make_generated_chunks`, `thinkingBudget: -1`) |
+| `app/tokens.py` | tiktoken с кэшем и graceful fallback на эвристику; `count_request` учитывает текст вложений (`attachmentText`), URL-контекст (`urls`, `urlItems`) и YouTube-транскрипты (`youtube`, `youtubeItems`) |
 | `app/docx.py` | `docx_bytes_to_markdown` (python-docx): заголовки/списки/таблицы `.docx` → читаемый Markdown без потери структуры |
 | `app/docx_preview.py` | PNG-изображения `.docx`: миниатюра **первой страницы** (~360 px) и **полноразмерные страницы предпросмотра** (~1100 px, до 15 стр., `generate_docx_pages`): MS Word через COM (`pywin32` → `ExportAsFixedFormat` в PDF, `_docx_to_pdf_bytes`) → PyMuPDF (`pymupdf`/`fitz`) растеризует страницы; если Word/COM/PDF недоступны — Pillow-превью белого листа A4 с реальным заголовком, первыми строками и таблицами (масштабируется под `width`) |
-| `app/url_context.py` | URL-контекст: `normalize_url` (https, без фрагментов/хвостовой пунктуации), `url_id` = SHA-1 нормализованного URL, `urls_in_chat` (user-чанки), загрузка страниц (`httpx` + браузерный UA → `trafilatura`, fallback BeautifulSoup4), кэш в `data/url_cache/`, исключения в `data/chat_meta/` (не трогают JSON чата) |
+| `app/url_context.py` | URL-контекст: `normalize_url` (https, без фрагментов/хвостовой пунктуации), `url_id` = SHA-1 нормализованного URL, `urls_in_chat` (user-чанки), загрузка страниц (`httpx` + браузерный UA → `trafilatura`, fallback BeautifulSoup4), кэш в `data/url_cache/`, исключения в `data/chat_meta/` (не трогают JSON чата); **YouTube-ссылки пропускаются** — их обслуживает `youtube_service` (только явный parse) |
+| `app/youtube_service.py` | YouTube/Shorts парсер: `extract_video_id` для всех форматов ссылок (`watch?v=`, `youtu.be/`, `shorts/`, `embed/`, `live/`), метаданные через `yt-dlp` без скачивания видео + локальное превью `thumb.jpg`, транскрипты в режимах `auto` (ручные субтитры ru/en → автосубтитры `[MM:SS]` → Whisper), `whisper` (аудио через yt-dlp во временный файл → `faster-whisper` `large-v3-turbo`, CPU `int8`, без VRAM), `diarize` (+эвристическая разметка `[Спикер N]` по паузам и смене акустических признаков сегментов); кэш `data/youtube_cache/{videoId}/` (`meta.json`, `thumb.jpg`, `transcript.json` с `tokenCount`); сеть — таймаут 15 с, ноль ретраев, ошибки → `YoutubeNetworkError` с подсказкой про VPN; `iter_chat_video_ids` (`youtubeVideo`-слот, ссылки в тексте, легаси `fileData.fileUri`) и `gather_youtube_context` — **только чтение кэша, сетевых запросов никогда** |
 | `app/utils.py` | атомарная запись JSON, валидация имён, id/имена файлов чатов |
-| `app/routers/system.py` | `/api/health` (в т. ч. `chatDir`), `/api/settings` GET/PUT (валидация baseUrl/ключей/лимитов, `urlContext`), `POST /api/system/select-chat-dir` (нативный диалог выбора папки через tkinter в отдельном процессе python → `set_chat_dir`; опциональный query-параметр `path` для программной смены без диалога), `/api/tokens/count` (принимает `chatId` + `urlContext`, считает реальный текст вложений и URL-контекст) |
+| `app/routers/system.py` | `/api/health` (в т. ч. `chatDir`), `/api/settings` GET/PUT (валидация baseUrl/ключей/лимитов, `urlContext`), `POST /api/system/select-chat-dir` (нативный диалог выбора папки через tkinter в отдельном процессе python → `set_chat_dir`; опциональный query-параметр `path` для программной смены без диалога), `/api/tokens/count` (принимает `chatId` + `urlContext`, считает реальный текст вложений, URL-контекст и кэшированные YouTube-транскрипты) |
 | `app/routers/chats.py` | CRUD чатов + `POST /api/chats/{id}/generate` (SSE: `token`, `reasoning_delta`, `done`, `error`, heartbeat), `GET /api/chats/{id}/assets/{chunk}/{slot}`, `GET/PUT /api/chats/{id}/url-context` (ссылки чата и исключения; metadata в `data/chat_meta/`, JSON чата не меняется) |
 | `app/routers/assets.py` | `POST /api/assets/upload` (в т. ч. `.docx` → Markdown: оригинал в `data/attachments/{assetId}.docx` + `{assetId}.meta.json` + сразу генерируется `{assetId}.thumb.png`, в чат идёт только текст; `assetId` = SHA-1 от base64 тех байт Markdown, что попадут в чат, — поэтому сайдкей находится позже прямо из JSON чата без нестандартных полей), `POST /api/assets/extract-url` (загрузка+парсинг страницы в кэш), `GET /api/uploads/{id}`, `GET /api/assets/docx-thumb/{assetId}` (PNG первой страницы, ленивая генерация при первом запросе), `GET /api/assets/docx-pages/{assetId}` (JSON-список полноэкранных PNG-страниц ~1100px, до 15, кэш `{assetId}.pageN.png` + манифест `{assetId}.pages.json`), `GET /api/assets/docx-page/{assetId}/{page}` (отдельная PNG-страница), `GET /api/assets/docx-file/{assetId}` (скачивание оригинала `.docx`), `GET /api/assets/local` (скан папки GAS), `/api/assets/local/file`, `/api/assets/local/thumb` (Pillow) |
 | `app/routers/llm.py` | `GET /api/llm/models` (по baseUrl/apiKey), `GET /api/llm/presets` (легаси — фронтенд пресеты не читает, они захардкожены в `RightPanel.tsx`) |
-| `data/` | `settings.json` (глобальные настройки + API-ключ), `backups/`, `uploads/`, `thumbnails/`, `attachments/` (оригиналы `.docx`, `*.meta.json` и `*.thumb.png` миниатюры), `trash/` |
+| `app/routers/youtube.py` | `POST /api/youtube/parse` (`url`, `mode: auto|whisper|diarize`, `forceRefresh` — единственный сетевой вход: парсит и кэширует метаданные/превью/текст), `GET /api/youtube/{videoId}` (кэшированные метаданные + транскрипт), `GET /api/youtube/{videoId}/thumb` (локальный `thumb.jpg`) |
+| `data/` | `settings.json` (глобальные настройки + API-ключ), `backups/`, `uploads/`, `thumbnails/`, `attachments/` (оригиналы `.docx`, `*.meta.json` и `*.thumb.png` миниатюры), `trash/`, `youtube_cache/` (`{videoId}/meta.json` + `thumb.jpg` + `transcript.json`) |
 
 ### Frontend (`frontend/src/`, React 18 + Vite + TS + Tailwind + Zustand)
 
@@ -122,6 +127,16 @@ Env-переменные: `LOCAL_AI_STUDIO_HOST/PORT/RELOAD`, `GAS_CHAT_DIR`,
   - **GAS-совместимость и тесты**: по-прежнему никаких новых полей в JSON чата. Сквозная проверка на живом сервере: загрузка `.docx` → `docx-pages` вернул 2 страницы (`source: word`), `docx-page/0` отдал PNG `1100×1424`; Pillow-фолбэк отдельно даёт 1 страницу `~1100px`.
 
 
+- **Шаг 4.1 выполнен (2026-11-26) — бэкенд парсера YouTube/Shorts**:
+  - **Новый `app/youtube_service.py` + роутер `app/routers/youtube.py`**: `POST /api/youtube/parse` (`url`, `mode`, `forceRefresh`) — единственный сетевой вход; `GET /api/youtube/{videoId}` — кэшированные метаданные и транскрипт; `GET /api/youtube/{videoId}/thumb` — локальный `thumb.jpg`.
+  - **Форматы ссылок**: `youtube.com/watch?v=…`, `youtu.be/…`, `youtube.com/shorts/…` (+`embed/`, `live/`, m/music-поддомены, голый id).
+  - **Метаданные без скачивания видео** (`yt-dlp`: title, channel, duration, isShort, thumbnail, viewCount) + **локальная копия превью** `thumb.jpg` — карточка в UI открывается даже без доступа к YouTube.
+  - **Режимы транскрипции**: `auto` — ручные субтитры `youtube-transcript-api` (приоритет ru/en), нет ручных — автосубтитры с таймкодами `[MM:SS]`, нет субтитров — локальный Whisper; `whisper` — только аудиодорожка (yt-dlp во временный файл) → `faster-whisper` `large-v3-turbo` **CPU int8** (не занимает VRAM); `diarize` — +эвристическая разметка `[Спикер N]` по паузам (≥1.5 с; ≥0.6 с со сдвигом `avg_logprob`) и смене акустических признаков сегментов. Готовый текст и `tokenCount` — в `transcript.json`.
+  - **Контекст модели**: `build_messages` подставляет транскрипт в последнее user-сообщение, **только если кэш уже загружен**; ссылки в тексте, `youtubeVideo`-слоты и легаси GAS `fileData.fileUri` обрабатываются одинаково (`iter_chat_video_ids`). `/api/tokens/count` учитывает транскрипты (`youtube`/`youtubeItems`). **Автозагрузка старых ссылок при открытии архивов GAS исключена**, JSON чатов не меняется; YouTube-ссылки исключены из generic URL-парсера (`url_context`).
+  - **Сетевые ошибки**: все запросы (yt-dlp, transcript-api, превью, HF-весы) — таймаут 15 с, ноль ретраев; таймаут/блокировка/бот-проверка → `YoutubeNetworkError` (504) с подсказкой «включите VPN», без зацикливания.
+  - **Зависимости**: `youtube-transcript-api`, `yt-dlp`, `faster-whisper` (вендорит ctranslate2/PyAV; whisper декодирует m4a без ffmpeg). shim `_ensure_av_compat()`: faster-whisper 1.2.1 передаёт в `av.open()` kwarg `metadata_errors`, удалённый в PyAV ≥15 (av 14 не имеет колёс под Python 3.14) — сервис снимает неподдерживаемый kwarg.
+  - **Проверено на живом сервере (2026-11-26)**: `POST /api/youtube/parse` ролика `jNQXAC9IVRw` (ссылка shorts) → meta (title/channel/19 с/isShort), `thumb.jpg` 30 КБ, `auto` — ручные субтитры с таймкодами; `whisper` и `diarize` — `large-v3-turbo` на CPU int8 (HF-весы закэшированы), диаризация разметила `[Спикер 1]/[Спикер 2]` по паузам; `GET /api/youtube/{id}` и `GET /api/youtube/{id}/thumb` отдают кэш; `/api/tokens/count` содержит поля `youtube`/`youtubeItems`.
+
 **UX**
 - Тёмная тема, glass-панели, адаптив (мобильные оверлеи панелей ≥1280px desktop), тосты, confirm-диалоги, копирование сообщений, автоскролл, stop-generation.
 
@@ -131,7 +146,7 @@ Env-переменные: `LOCAL_AI_STUDIO_HOST/PORT/RELOAD`, `GAS_CHAT_DIR`,
 - Мысли хранятся в JSON, но в контекст модели не попадают — при длинных сессиях «память» модели теряет ход рассуждений (решается компактингом, §7).
 - Токены для чужих моделей считаются приближённо (tiktoken-оценка).
 - CORS включён только для dev-портов (5173/4173/3000); прод идёт через статику FastAPI.
-- Лайфспан `main.py` чистит только `uploads/` и `thumbnails/`; сайдкей-файлы `data/attachments/` (оригиналы `.docx`, миниатюры `*.thumb.png` и страницы `*.pageN.png` + манифесты `*.pages.json`) не удаляются — нужен TTL/сборщик мусора по чатам.
+- Лайфспан `main.py` чистит только `uploads/` и `thumbnails/`; сайдкей-файлы `data/attachments/` (оригиналы `.docx`, миниатюры `*.thumb.png` и страницы `*.pageN.png` + манифесты `*.pages.json`) и кэш `data/youtube_cache/` не удаляются — нужен TTL/сборщик мусора по чатам.
 - Миниатюра `.docx` зависит от установленного MS Word: без него работает Pillow-fallback (структура документа, не типографика); Word COM запускается в отдельных потоках пула, при массовых загрузках это заметно по времени.
 
 ## 7. Дальнейший план (в порядке приоритета)
@@ -142,7 +157,7 @@ Env-переменные: `LOCAL_AI_STUDIO_HOST/PORT/RELOAD`, `GAS_CHAT_DIR`,
 2. **Парсеры источников во embeddings-контекст**:
    - URL-парсер — ✅ выполнено в рамках Задачи №3 (2026-11-22): `POST /api/assets/extract-url` + кэш `data/url_cache/` + рантайм-инъекция в контекст модели (см. §5).
    - DOCX-парсер — ✅ выполнено в рамках Задачи №3 (2026-11-22): `app/docx.py` (python-docx), текст идёт в чат как Markdown, оригинал в `data/attachments/`; миниатюра первой страницы — ✅ Задача №5 (2026-11-25).
-   - YouTube (`youtubeVideo`-чанки и обычные ссылки): извлечение субтитров/транскрипта → текстовый вложение-контекст (пока не сделано).
+   - YouTube (`youtubeVideo`-чанки и обычные ссылки): извлечение субтитров/транскрипта → текстовый вложение-контекст — ✅ бэкенд выполнен в рамках Шага 4.1 (2026-11-26): `app/youtube_service.py` + `POST /api/youtube/parse` + кэш `data/youtube_cache/` + рантайм-инъекция в контекст модели; UI-карточки YouTube-вложений — на будущее.
 3. **Web Search**: инструмент «поиск в вебе» — либо native search у провайдера, либо собственный цикл (search-API → топ-N страниц → контекст), результаты оформляются как GAS-чанки `grounding`/`citations` для совместимости.
 4. **Python-песочница**: выполнение `executableCode` из ответов локально (isolated subprocess с лимитами CPU/сети/tmp), результаты — в чанки `codeExecutionResult`, как в GAS; whitelist импортов, таймаут.
 5. **Память и компактинг (гибридный RAG)**:

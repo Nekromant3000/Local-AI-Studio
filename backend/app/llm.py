@@ -28,6 +28,7 @@ from .config import (
 from .docx import docx_bytes_to_markdown
 from .tokens import count_tokens
 from .url_context import build_context_blocks, gather_url_context
+from .youtube_service import build_youtube_context_blocks, gather_youtube_context
 from .utils import utc_now_iso
 
 MAX_IMAGES = 12
@@ -340,6 +341,21 @@ def inject_depth_reminder(
     messages.append({"role": "user", "content": reminder})
 
 
+def append_to_last_user(messages: list[dict[str, Any]], text: str) -> None:
+    """Дописывает текстовый блок к последнему сообщению пользователя (в памяти
+    запроса; JSON чата на диске не меняется)."""
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index].get("role") != "user":
+            continue
+        content = messages[index].get("content")
+        if isinstance(content, list):
+            content.append({"type": "text", "text": text})
+        else:
+            messages[index]["content"] = f"{content or ''}\n\n{text}".strip()
+        return
+    messages.append({"role": "user", "content": text})
+
+
 def build_messages(
     raw: dict[str, Any],
     *,
@@ -508,19 +524,18 @@ def build_messages(
                 "Контекст ссылок из переписки (автоматически извлечённый текст страниц):\n\n"
                 + "\n\n".join(blocks)
             )
-            injected = False
-            for index in range(len(messages) - 1, -1, -1):
-                if messages[index].get("role") != "user":
-                    continue
-                content = messages[index].get("content")
-                if isinstance(content, list):
-                    content.append({"type": "text", "text": url_block})
-                else:
-                    messages[index]["content"] = f"{content or ''}\n\n{url_block}".strip()
-                injected = True
-                break
-            if not injected:
-                messages.append({"role": "user", "content": url_block})
+            append_to_last_user(messages, url_block)
+
+    # Транскрипты YouTube-видео подставляются ТОЛЬКО если они уже есть в локальном
+    # кэше (загружены явным POST /api/youtube/parse) — никаких сетевых запросов
+    # при обычном открытии чатов и генерации.
+    youtube_blocks = build_youtube_context_blocks(gather_youtube_context(raw))
+    if youtube_blocks:
+        youtube_block = (
+            "Транскрипты YouTube-видео из переписки (расшифрованы локально):\n\n"
+            + "\n\n".join(youtube_blocks)
+        )
+        append_to_last_user(messages, youtube_block)
 
     if system_text.strip():
         messages.insert(0, {"role": "system", "content": system_text.strip()})

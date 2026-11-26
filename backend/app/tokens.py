@@ -58,6 +58,8 @@ def count_request(
     attachment_text_tokens: int = 0,
     url_tokens: int = 0,
     urls: list[dict[str, Any]] | None = None,
+    youtube_tokens: int = 0,
+    youtube_items: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     system_tokens = count_tokens(system)
     message_tokens = sum(count_tokens(text) for text in (texts or []))
@@ -66,7 +68,16 @@ def count_request(
     files = max(0, int(file_count)) * FILE_TOKEN_ESTIMATE
     text_files = max(0, int(attachment_text_tokens))
     urls_total = max(0, int(url_tokens))
-    total = system_tokens + message_tokens + images + files + text_files + urls_total
+    youtube_total = max(0, int(youtube_tokens))
+    total = (
+        system_tokens
+        + message_tokens
+        + images
+        + files
+        + text_files
+        + urls_total
+        + youtube_total
+    )
     return {
         "total": total,
         "system": system_tokens,
@@ -77,6 +88,8 @@ def count_request(
         "attachmentText": text_files,
         "urls": urls_total,
         "urlItems": urls or [],
+        "youtube": youtube_total,
+        "youtubeItems": youtube_items or [],
         "thoughts": thought_tokens,
         "approximate": True,
         "tokenizer": "cl100k_base" if _get_encoding() is not None else "chars/4",

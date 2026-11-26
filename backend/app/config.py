@@ -29,6 +29,7 @@ THUMB_DIR = DATA_DIR / "thumbnails"
 ATTACHMENTS_DIR = DATA_DIR / "attachments"
 URL_CACHE_DIR = DATA_DIR / "url_cache"
 CHAT_META_DIR = DATA_DIR / "chat_meta"
+YOUTUBE_CACHE_DIR = DATA_DIR / "youtube_cache"
 SETTINGS_FILE = DATA_DIR / "settings.json"
 FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 
@@ -123,7 +124,16 @@ DEFAULT_CHAT_RUN_SETTINGS: dict[str, Any] = {
 
 
 def ensure_dirs() -> None:
-    for path in (DATA_DIR, UPLOAD_DIR, BACKUP_DIR, THUMB_DIR, ATTACHMENTS_DIR, URL_CACHE_DIR, CHAT_META_DIR):
+    for path in (
+        DATA_DIR,
+        UPLOAD_DIR,
+        BACKUP_DIR,
+        THUMB_DIR,
+        ATTACHMENTS_DIR,
+        URL_CACHE_DIR,
+        CHAT_META_DIR,
+        YOUTUBE_CACHE_DIR,
+    ):
         path.mkdir(parents=True, exist_ok=True)
 
 

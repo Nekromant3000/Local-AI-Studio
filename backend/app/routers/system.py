@@ -27,6 +27,7 @@ from ..docx import docx_bytes_to_markdown
 from ..llm import MAX_TEXT_ATTACHMENT_CHARS
 from ..tokens import FILE_TOKEN_ESTIMATE, count_request, count_tokens
 from ..url_context import gather_url_context
+from ..youtube_service import gather_youtube_context
 from ..utils import InvalidNameError, chat_id_decode, utc_now_iso
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -195,6 +196,8 @@ async def token_count(payload: TokenCountRequest) -> dict[str, Any]:
     embedded_text_files = 0
     url_tokens = 0
     url_items: list[dict[str, Any]] = []
+    youtube_tokens = 0
+    youtube_items: list[dict[str, Any]] = []
 
     if payload.chatId:
         try:
@@ -251,6 +254,23 @@ async def token_count(payload: TokenCountRequest) -> dict[str, Any]:
                             }
                         )
 
+            # YouTube-транскрипты: только уже загруженный кэш (сетевых запросов нет)
+            try:
+                yt_records = gather_youtube_context(raw)
+            except Exception:
+                yt_records = []
+            for record in yt_records:
+                tokens = count_tokens(str(record.get("text") or ""))
+                youtube_tokens += tokens
+                youtube_items.append(
+                    {
+                        "videoId": record.get("videoId"),
+                        "url": record.get("url"),
+                        "title": record.get("title"),
+                        "tokens": tokens,
+                    }
+                )
+
     return count_request(
         texts=payload.texts,
         system=payload.system,
@@ -260,4 +280,6 @@ async def token_count(payload: TokenCountRequest) -> dict[str, Any]:
         attachment_text_tokens=attachment_text_tokens,
         url_tokens=url_tokens,
         urls=url_items,
+        youtube_tokens=youtube_tokens,
+        youtube_items=youtube_items,
     )

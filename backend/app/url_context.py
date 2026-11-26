@@ -207,6 +207,26 @@ def _is_thought_chunk(chunk: dict[str, Any]) -> bool:
     )
 
 
+# YouTube-ссылки обслуживает отдельный парсер (app.youtube_service): generic
+# загрузка страниц их не трогает — иначе каждое поколение дергал бы youtube.com.
+# Хосты дублируются из youtube_service намеренно (там импорт url_context —
+# обратный импорт создал бы цикл).
+_YOUTUBE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "gaming.youtube.com",
+    "youtu.be",
+    "www.youtu.be",
+}
+
+
+def _is_youtube_url(url: str) -> bool:
+    host = urlparse(url).netloc.lower().partition(":")[0]
+    return host in _YOUTUBE_HOSTS
+
+
 def urls_in_chat(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Все ссылки из пользовательских сообщений чата (без мыслей модели)."""
     seen: set[str] = set()
@@ -245,6 +265,8 @@ def gather_url_context(
     for item in urls_in_chat(data):
         if item["urlId"] in excluded:
             continue
+        if _is_youtube_url(item["url"]):
+            continue  # YouTube обрабатывает youtube_service (только по явному parse)
         if len(records) >= MAX_URLS_PER_CHAT:
             break
         cached = load_cached_url(item["urlId"])

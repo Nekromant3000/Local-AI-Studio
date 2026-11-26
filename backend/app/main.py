@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from .attachments import AttachmentError
 from .config import CHAT_DIR, FRONTEND_DIST, THUMB_DIR, UPLOAD_DIR, ensure_dirs
 from .gas_store import ChatNotFoundError, ChatValidationError
-from .routers import assets, chats, llm, system
+from .routers import assets, chats, llm, system, youtube
 from .utils import InvalidNameError
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -98,6 +98,7 @@ app.include_router(system.router)
 app.include_router(chats.router)
 app.include_router(assets.router)
 app.include_router(llm.router)
+app.include_router(youtube.router)
 
 
 @app.get("/health")
