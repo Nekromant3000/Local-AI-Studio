@@ -25,9 +25,9 @@ from ..config import (
 )
 from ..docx import docx_bytes_to_markdown
 from ..llm import MAX_TEXT_ATTACHMENT_CHARS
-from ..tokens import FILE_TOKEN_ESTIMATE, count_request, count_tokens
+from ..tokens import FILE_TOKEN_ESTIMATE, FRAME_TOKEN_ESTIMATE, count_request, count_tokens
 from ..url_context import gather_url_context
-from ..youtube_service import gather_youtube_context
+from ..youtube_service import gather_video_frames, gather_youtube_context
 from ..utils import InvalidNameError, chat_id_decode, utc_now_iso
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -198,6 +198,8 @@ async def token_count(payload: TokenCountRequest) -> dict[str, Any]:
     url_items: list[dict[str, Any]] = []
     youtube_tokens = 0
     youtube_items: list[dict[str, Any]] = []
+    frame_tokens = 0
+    frame_items: list[dict[str, Any]] = []
 
     if payload.chatId:
         try:
@@ -271,6 +273,28 @@ async def token_count(payload: TokenCountRequest) -> dict[str, Any]:
                     }
                 )
 
+            # Кэшированные кадры этих видео (умная нарезка/вырезка): тот же лимит,
+            # что и при генерации (gather_video_frames), ~260 токенов на кадр.
+            try:
+                frame_groups = gather_video_frames(
+                    [str(record.get("videoId") or "") for record in yt_records]
+                )
+            except Exception:
+                frame_groups = []
+            for group in frame_groups:
+                for frame in group["frames"]:
+                    tokens = int(frame.get("tokens") or FRAME_TOKEN_ESTIMATE)
+                    frame_tokens += tokens
+                    frame_items.append(
+                        {
+                            "videoId": group.get("videoId"),
+                            "frameId": frame.get("id"),
+                            "timecode": frame.get("timecode"),
+                            "source": frame.get("source"),
+                            "tokens": tokens,
+                        }
+                    )
+
     return count_request(
         texts=payload.texts,
         system=payload.system,
@@ -282,4 +306,6 @@ async def token_count(payload: TokenCountRequest) -> dict[str, Any]:
         urls=url_items,
         youtube_tokens=youtube_tokens,
         youtube_items=youtube_items,
+        frame_tokens=frame_tokens,
+        frame_items=frame_items,
     )

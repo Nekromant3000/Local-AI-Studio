@@ -9,6 +9,8 @@ from typing import Any
 
 IMAGE_TOKEN_ESTIMATE = 1101
 FILE_TOKEN_ESTIMATE = 500
+# Кадры YouTube (~768 px JPEG) в мультимодальном контексте — лёгкая оценка.
+FRAME_TOKEN_ESTIMATE = 260
 
 _encoding: Any = None
 _encoding_lock = threading.Lock()
@@ -60,6 +62,8 @@ def count_request(
     urls: list[dict[str, Any]] | None = None,
     youtube_tokens: int = 0,
     youtube_items: list[dict[str, Any]] | None = None,
+    frame_tokens: int = 0,
+    frame_items: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     system_tokens = count_tokens(system)
     message_tokens = sum(count_tokens(text) for text in (texts or []))
@@ -69,6 +73,7 @@ def count_request(
     text_files = max(0, int(attachment_text_tokens))
     urls_total = max(0, int(url_tokens))
     youtube_total = max(0, int(youtube_tokens))
+    frames_total = max(0, int(frame_tokens))
     total = (
         system_tokens
         + message_tokens
@@ -77,12 +82,13 @@ def count_request(
         + text_files
         + urls_total
         + youtube_total
+        + frames_total
     )
     return {
         "total": total,
         "system": system_tokens,
         "messages": message_tokens,
-        "attachments": images + files + text_files,
+        "attachments": images + files + text_files + frames_total,
         "images": images,
         "files": files,
         "attachmentText": text_files,
@@ -90,6 +96,8 @@ def count_request(
         "urlItems": urls or [],
         "youtube": youtube_total,
         "youtubeItems": youtube_items or [],
+        "frames": frames_total,
+        "frameItems": frame_items or [],
         "thoughts": thought_tokens,
         "approximate": True,
         "tokenizer": "cl100k_base" if _get_encoding() is not None else "chars/4",

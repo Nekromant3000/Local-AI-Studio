@@ -28,7 +28,11 @@ from .config import (
 from .docx import docx_bytes_to_markdown
 from .tokens import count_tokens
 from .url_context import build_context_blocks, gather_url_context
-from .youtube_service import build_youtube_context_blocks, gather_youtube_context
+from .youtube_service import (
+    build_youtube_context_blocks,
+    gather_video_frames,
+    gather_youtube_context,
+)
 from .utils import utc_now_iso
 
 MAX_IMAGES = 12
@@ -356,6 +360,22 @@ def append_to_last_user(messages: list[dict[str, Any]], text: str) -> None:
     messages.append({"role": "user", "content": text})
 
 
+def append_parts_to_last_user(
+    messages: list[dict[str, Any]], parts: list[dict[str, Any]]
+) -> None:
+    """Дописывает части (текст/изображения) к последнему сообщению пользователя,
+    переводя content в мультимодальный список (только в памяти запроса)."""
+    if not parts:
+        return
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index].get("role") != "user":
+            continue
+        content = messages[index].get("content")
+        messages[index]["content"] = _content_to_parts(content) + parts
+        return
+    messages.append({"role": "user", "content": list(parts)})
+
+
 def build_messages(
     raw: dict[str, Any],
     *,
@@ -526,16 +546,59 @@ def build_messages(
             )
             append_to_last_user(messages, url_block)
 
-    # Транскрипты YouTube-видео подставляются ТОЛЬКО если они уже есть в локальном
-    # кэше (загружены явным POST /api/youtube/parse) — никаких сетевых запросов
-    # при обычном открытии чатов и генерации.
-    youtube_blocks = build_youtube_context_blocks(gather_youtube_context(raw))
+    # Транскрипты и кадры YouTube-видео подставляются ТОЛЬКО если они уже есть в
+    # локальном кэше (загружены явным POST /api/youtube/parse и /extract-frames) —
+    # никаких сетевых запросов при обычном открытии чатов и генерации.
+    youtube_records = gather_youtube_context(raw)
+    youtube_blocks = build_youtube_context_blocks(youtube_records)
     if youtube_blocks:
         youtube_block = (
             "Транскрипты YouTube-видео из переписки (расшифрованы локально):\n\n"
             + "\n\n".join(youtube_blocks)
         )
         append_to_last_user(messages, youtube_block)
+
+    # Кадры из кэша (умная нарезка auto / capture-frame manual) — мультимодальное
+    # дополнение к транскриптам: каждый кадр подписан таймкодом [MM:SS].
+    frame_parts: list[dict[str, Any]] = []
+    frame_notes: list[str] = []
+    frame_groups = gather_video_frames(
+        [str(record.get("videoId") or "") for record in youtube_records]
+    )
+    if frame_groups:
+        frame_parts.append(
+            {
+                "type": "text",
+                "text": "Кадры YouTube-видео из переписки (по таймкодам, см. транскрипты выше):",
+            }
+        )
+    for group in frame_groups:
+        for frame in group["frames"]:
+            caption = f"Кадр [{frame['timecode']}] видео «{group['title']}»:"
+            if images_used >= MAX_IMAGES:
+                frame_notes.append(
+                    f"Кадр {caption} пропущен (лимит {MAX_IMAGES} изображений)."
+                )
+                continue
+            try:
+                frame_bytes = frame["path"].read_bytes()
+            except OSError:
+                frame_notes.append(f"Кадр {caption} не удалось прочитать с диска.")
+                continue
+            data_url = _prepare_image(frame_bytes, "image/jpeg", frame["filename"])
+            if not data_url:
+                frame_notes.append(f"Кадр {caption} не удалось подготовить к отправке.")
+                continue
+            frame_parts.append({"type": "text", "text": caption})
+            frame_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+            images_used += 1
+    if len(frame_parts) > 1:
+        append_parts_to_last_user(messages, frame_parts)
+    if frame_notes:
+        append_to_last_user(
+            messages,
+            "Примечания к кадрам:\n" + "\n".join(f"- {note}" for note in frame_notes[:20]),
+        )
 
     if system_text.strip():
         messages.insert(0, {"role": "system", "content": system_text.strip()})
