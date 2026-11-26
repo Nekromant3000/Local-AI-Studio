@@ -22,6 +22,7 @@ import CopyButton from "./CopyButton";
 import MarkdownView from "./MarkdownView";
 import ThinkingBlock from "./ThinkingBlock";
 import UrlContextChips from "./UrlContextChips";
+import YouTubeCards from "./YouTubeCards";
 
 interface MessageFrameProps {
   turn: DisplayTurn;
@@ -378,6 +379,7 @@ export default function MessageFrame({ turn, chatId }: MessageFrameProps) {
     return (
       <section className="group/frame animate-fade-up flex justify-end">
         <div className="ml-auto flex w-full max-w-[min(820px,94%)] flex-col items-end gap-3">
+          {!editing ? <YouTubeCards turn={turn} /> : null}
           {!editing ? attachmentsBlock : null}
 
           <div className="w-full rounded-2xl border border-[#293b63]/80 bg-[#101a31]/75 px-4 py-3 shadow-[0_1px_0_rgba(255,255,255,.03)_inset]">

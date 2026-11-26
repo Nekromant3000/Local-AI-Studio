@@ -9,6 +9,7 @@ import {
 } from "../lib/frames";
 import { estimateTokens } from "../lib/frames";
 import { formatBytes } from "../lib/format";
+import { youtubeWatchUrl } from "../lib/youtube";
 import type {
   AppSettings,
   AttachmentSlot,
@@ -25,11 +26,20 @@ import type {
   ThinkingLevel,
   TokenStats,
   UrlContextItem,
+  YoutubeTranscriptMode,
+  YoutubeVideo,
 } from "../types";
 
 const LAST_CHAT_KEY = "local-ai-studio:last-chat";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
+
+// YouTube-кэш на видео (этап 4): «uncached» = 404 от GET /api/youtube/{id}
+// (видео не разобрано), «cached» = есть meta/транскрипт в data/youtube_cache/.
+export interface YoutubeVideoEntry {
+  status: "loading" | "cached" | "uncached";
+  video: YoutubeVideo | null;
+}
 
 interface AppState {
   chats: ChatSummary[];
@@ -51,6 +61,7 @@ interface AppState {
   tokenStats: TokenStats | null;
   tokenLoading: boolean;
   urlContextItems: UrlContextItem[];
+  youtube: Record<string, YoutubeVideoEntry>;
   streaming: StreamingState | null;
   generating: boolean;
   draftText: string;
@@ -73,6 +84,17 @@ interface AppState {
   refreshTokens: () => Promise<void>;
   refreshUrlContext: () => Promise<void>;
   setUrlExcluded: (urlId: string, excluded: boolean) => Promise<void>;
+  probeYoutube: (videoId: string) => Promise<void>;
+  refreshYoutube: (videoId: string) => Promise<void>;
+  parseYoutube: (
+    videoId: string,
+    mode?: YoutubeTranscriptMode,
+    forceRefresh?: boolean,
+  ) => Promise<boolean>;
+  extractYoutubeFrames: (videoId: string) => Promise<boolean>;
+  captureYoutubeFrame: (videoId: string, timestampSec: number) => Promise<boolean>;
+  uploadYoutubeFrame: (videoId: string, file: File, timestampSec: number) => Promise<boolean>;
+  deleteYoutubeFrame: (videoId: string, frameId: string) => Promise<boolean>;
   saveNow: () => Promise<boolean>;
   scheduleSave: (delay?: number) => void;
   updateChat: (mutator: (chat: GasChat) => void, options?: { save?: boolean }) => void;
@@ -181,6 +203,20 @@ function errorMessage(error: unknown): string {
   return extractErrorMessage(error);
 }
 
+/** Транскрипт тяжёлый (полный текст + сегменты) — в store держим только сводку. */
+function stripYoutubeVideo(video: YoutubeVideo): YoutubeVideo {
+  if (!video.transcript) return { ...video, transcript: null };
+  const { text, segments, ...summary } = video.transcript;
+  return {
+    ...video,
+    transcript: {
+      ...summary,
+      segmentsCount: summary.segmentsCount ?? segments?.length ?? 0,
+      textLength: summary.textLength ?? text?.length ?? 0,
+    },
+  };
+}
+
 function localSettingsFor(doc: ChatDocument | null, settings: AppSettings): LocalApiSettings {
   const local = doc?.chat.runSettings?.localApi;
   const thinkingLevel = resolveThinkingLevel(doc, settings);
@@ -268,6 +304,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   tokenStats: null,
   tokenLoading: false,
   urlContextItems: [],
+  youtube: {},
   streaming: null,
   generating: false,
   draftText: "",
@@ -542,6 +579,133 @@ export const useAppStore = create<AppState>()((set, get) => ({
     } catch (error) {
       set({ error: errorMessage(error) });
       void get().refreshUrlContext();
+    }
+  },
+
+  // ─── YouTube/Shorts (этап 4) ───────────────────────────────────────────────
+  // GET /api/youtube/{id} читает только локальный кэш: 404 = «не разобрано».
+  // Полный текст транскрипта (text/segments) в store не храним — только сводку.
+
+  probeYoutube: async (videoId) => {
+    if (get().youtube[videoId]) return; // один GET на видео за сессию приложения
+    set((state) => ({
+      youtube: { ...state.youtube, [videoId]: { status: "loading", video: null } },
+    }));
+    try {
+      const video = await api.getYoutubeVideo(videoId);
+      set((state) => ({
+        youtube: { ...state.youtube, [videoId]: { status: "cached", video: stripYoutubeVideo(video) } },
+      }));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        set((state) => ({
+          youtube: { ...state.youtube, [videoId]: { status: "uncached", video: null } },
+        }));
+      } else {
+        // Сетевой сбой: запись чистим, чтобы следующий рендер повторил проб.
+        set((state) => {
+          const next = { ...state.youtube };
+          delete next[videoId];
+          return { youtube: next };
+        });
+        set({ error: errorMessage(error) });
+      }
+    }
+  },
+
+  refreshYoutube: async (videoId) => {
+    try {
+      const video = await api.getYoutubeVideo(videoId);
+      set((state) => ({
+        youtube: { ...state.youtube, [videoId]: { status: "cached", video: stripYoutubeVideo(video) } },
+      }));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) {
+        set((state) => ({
+          youtube: { ...state.youtube, [videoId]: { status: "uncached", video: null } },
+        }));
+      } else {
+        set({ error: errorMessage(error) });
+      }
+    }
+  },
+
+  parseYoutube: async (videoId, mode = "auto", forceRefresh = false) => {
+    set((state) => ({
+      youtube: {
+        ...state.youtube,
+        [videoId]: { status: "loading", video: state.youtube[videoId]?.video ?? null },
+      },
+    }));
+    try {
+      const result = await api.parseYoutube(youtubeWatchUrl(videoId), mode, forceRefresh);
+      await get().refreshYoutube(videoId);
+      const title = result.meta.title || videoId;
+      const tokens = (result.transcript?.tokenCount ?? 0).toLocaleString("ru-RU");
+      set({ notice: `Видео «${title}» загружено в контекст · транскрипт ≈${tokens} ток.` });
+      void get().refreshTokens();
+      return true;
+    } catch (error) {
+      set((state) => ({
+        youtube: { ...state.youtube, [videoId]: { status: "uncached", video: null } },
+      }));
+      set({ error: errorMessage(error) });
+      return false;
+    }
+  },
+
+  extractYoutubeFrames: async (videoId) => {
+    try {
+      const result = await api.extractYoutubeFrames(videoId);
+      await get().refreshYoutube(videoId);
+      const tokens = (result.tokenCount ?? 0).toLocaleString("ru-RU");
+      set({ notice: `Нарезано кадров: ${result.frames.length} · кадры ≈${tokens} ток.` });
+      void get().refreshTokens();
+      return true;
+    } catch (error) {
+      set({ error: errorMessage(error) });
+      return false;
+    }
+  },
+
+  captureYoutubeFrame: async (videoId, timestampSec) => {
+    try {
+      const result = await api.captureYoutubeFrame(videoId, timestampSec);
+      await get().refreshYoutube(videoId);
+      const tokens = (result.tokenCount ?? 0).toLocaleString("ru-RU");
+      set({ notice: `Кадр [${result.frame.timecode}] добавлен · кадры ≈${tokens} ток.` });
+      void get().refreshTokens();
+      return true;
+    } catch (error) {
+      set({ error: errorMessage(error) });
+      return false;
+    }
+  },
+
+  uploadYoutubeFrame: async (videoId, file, timestampSec) => {
+    try {
+      const result = await api.uploadYoutubeFrame(videoId, file, timestampSec);
+      await get().refreshYoutube(videoId);
+      const tokens = (result.tokenCount ?? 0).toLocaleString("ru-RU");
+      set({ notice: `Скриншот [${result.frame.timecode}] добавлен · кадры ≈${tokens} ток.` });
+      void get().refreshTokens();
+      return true;
+    } catch (error) {
+      set({ error: errorMessage(error) });
+      return false;
+    }
+  },
+
+  deleteYoutubeFrame: async (videoId, frameId) => {
+    try {
+      const result = await api.deleteYoutubeFrame(videoId, frameId);
+      await get().refreshYoutube(videoId);
+      set({ notice: "Кадр удалён" });
+      void get().refreshTokens();
+      return true;
+    } catch (error) {
+      set({ error: errorMessage(error) });
+      return false;
     }
   },
 

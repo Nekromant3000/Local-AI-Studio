@@ -9,6 +9,11 @@ import type {
   TokenStats,
   UploadedAsset,
   UrlContextItem,
+  YoutubeFrame,
+  YoutubeMeta,
+  YoutubeTranscript,
+  YoutubeTranscriptMode,
+  YoutubeVideo,
 } from "../types";
 
 const API_BASE = "/api";
@@ -244,6 +249,70 @@ export const api = {
     });
   },
 
+  // ─── YouTube/Shorts (этап 4) ─────────────────────────────────────────────
+  // POST /youtube/parse — единственный сетевой вход; GET-эндпоинты читают
+  // только локальный кэш data/youtube_cache/ (404 = видео не разобрано).
+
+  parseYoutube(
+    url: string,
+    mode: YoutubeTranscriptMode = "auto",
+    forceRefresh = false,
+  ): Promise<{ ok: boolean; videoId: string; meta: YoutubeMeta; transcript: YoutubeTranscript }> {
+    return request(`/youtube/parse`, {
+      method: "POST",
+      body: JSON.stringify({ url, mode, forceRefresh }),
+    });
+  },
+
+  getYoutubeVideo(videoId: string): Promise<YoutubeVideo> {
+    return request<YoutubeVideo>(`/youtube/${encodeURIComponent(videoId)}`);
+  },
+
+  extractYoutubeFrames(
+    videoId: string,
+    maxFrames = 10,
+    minIntervalSec = 4,
+  ): Promise<{ ok: boolean; videoId: string; frames: YoutubeFrame[]; tokenCount: number | null }> {
+    return request(`/youtube/${encodeURIComponent(videoId)}/extract-frames`, {
+      method: "POST",
+      body: JSON.stringify({ max_frames: maxFrames, min_interval_sec: minIntervalSec }),
+    });
+  },
+
+  captureYoutubeFrame(
+    videoId: string,
+    timestampSec: number,
+  ): Promise<{ ok: boolean; videoId: string; frame: YoutubeFrame; frames: YoutubeFrame[]; tokenCount: number | null }> {
+    return request(`/youtube/${encodeURIComponent(videoId)}/capture-frame`, {
+      method: "POST",
+      body: JSON.stringify({ timestamp_sec: timestampSec }),
+    });
+  },
+
+  uploadYoutubeFrame(
+    videoId: string,
+    file: File,
+    timestampSec: number,
+  ): Promise<{ ok: boolean; videoId: string; frame: YoutubeFrame; frames: YoutubeFrame[]; tokenCount: number | null }> {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("timestamp_sec", String(timestampSec));
+    return request(`/youtube/${encodeURIComponent(videoId)}/upload-frame`, {
+      method: "POST",
+      body: form,
+      headers: {},
+    });
+  },
+
+  deleteYoutubeFrame(
+    videoId: string,
+    frameId: string,
+  ): Promise<{ ok: boolean; videoId: string; deletedFrameId: string; frames: YoutubeFrame[]; tokenCount: number | null }> {
+    return request(`/youtube/${encodeURIComponent(videoId)}/frames/${encodeURIComponent(frameId)}`, {
+      method: "DELETE",
+    });
+  },
+
   uploadAsset(file: File): Promise<UploadedAsset> {
     const form = new FormData();
     form.append("file", file);
@@ -407,4 +476,14 @@ export function docxPagesUrl(assetId: string): string {
 export function docxFileUrl(assetId: string, download = false): string {
   const base = `${API_BASE}/assets/docx-file/${encodeURIComponent(assetId)}`;
   return download ? `${base}?download=true` : base;
+}
+
+/** Локальная копия превью `thumb.jpg` (только для разобранных видео). */
+export function youtubeThumbUrl(videoId: string): string {
+  return `${API_BASE}/youtube/${encodeURIComponent(videoId)}/thumb`;
+}
+
+/** JPEG кадра из кэша `data/youtube_cache/{videoId}/frames/`. */
+export function youtubeFrameUrl(videoId: string, filename: string): string {
+  return `${API_BASE}/youtube/${encodeURIComponent(videoId)}/frames/${encodeURIComponent(filename)}`;
 }

@@ -184,6 +184,62 @@ export interface UrlContextItem {
   excluded: boolean;
 }
 
+// YouTube/Shorts (этап 4): ответы /api/youtube/*
+export type YoutubeTranscriptMode = "auto" | "whisper" | "diarize";
+
+export interface YoutubeMeta {
+  videoId: string;
+  url: string;
+  title: string;
+  channel?: string | null;
+  duration?: number | null;
+  durationLabel?: string | null;
+  isShort?: boolean;
+  thumbnail?: string | null;
+  viewCount?: number | null;
+  uploadDate?: string | null;
+  fetchedAt?: string;
+  /** Путь к локальному thumb.jpg (`/api/youtube/{id}/thumb`), если превью скачано. */
+  thumbUrl?: string | null;
+}
+
+export interface YoutubeTranscript {
+  mode: YoutubeTranscriptMode;
+  source?: string | null;
+  sourceNote?: string | null;
+  model?: string | null;
+  language?: string | null;
+  duration?: number | null;
+  tokenCount: number;
+  createdAt?: string;
+  segmentsCount?: number;
+  preview?: string;
+  textLength?: number;
+}
+
+export interface YoutubeFrame {
+  id: string;
+  timestamp_sec: number;
+  timecode: string;
+  source: "auto" | "manual";
+  filename: string;
+  tokens: number;
+  width?: number;
+  height?: number;
+  bytes?: number;
+  createdAt?: string;
+}
+
+export interface YoutubeVideo {
+  videoId: string;
+  meta: YoutubeMeta | null;
+  /** Полный транскрипт из GET содержит text/segments — в store они вырезаются. */
+  transcript: (YoutubeTranscript & { text?: string; segments?: unknown[] }) | null;
+  thumbUrl: string | null;
+  frames: YoutubeFrame[];
+  framesTokenCount: number | null;
+}
+
 export interface UploadedAsset {
   tempId: string;
   name: string;
